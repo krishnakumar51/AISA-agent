@@ -50,12 +50,8 @@
                     <input id="url" type="text" value="https://www.flipkart.com/">
                 </div>
                 <div class="input-group">
-                    <label for="query">Your Query</label>
-                    <input id="query" type="text" value="latest samsung smartphones under 50000">
-                </div>
-                <div class="input-group">
-                    <label for="topk">Top K Results</label>
-                    <input id="topk" type="number" value="5">
+                    <label for="query">Query</label>
+                    <input id="query" type="text" value="latest top 5 samsung smartphones under 50000">
                 </div>
                 <div class="input-group">
                     <label for="provider">LLM Provider</label>
@@ -252,7 +248,6 @@
             const body = {
                 url: document.getElementById('url').value,
                 query: document.getElementById('query').value,
-                top_k: parseInt(document.getElementById('topk').value, 10),
                 llm_provider: document.getElementById('provider').value,
             };
 

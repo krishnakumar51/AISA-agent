@@ -20,14 +20,28 @@ class LLMProvider(str, Enum):
 
 REFINER_PROMPT = """
 Analyze the user's request and create a concise, actionable instruction for an AI web agent.
-Focus on the ultimate goal.
+Focus on the ultimate goal and extract the number of items requested.
 
 User's Target URL: {url}
 User's Query: "{query}"
 
-Based on this, generate a single, clear instruction.
-Example: "Find the top 5 smartphones under ₹50,000 on flipkart.com, collecting their name, price, and URL."
-Refined Instruction:
+IMPORTANT: Detect if the user asks for a specific number of items (top 3, best 5, first 10, etc.).
+If no specific number is mentioned, default to 1.
+
+Your response must be in this exact JSON format:
+{{
+    "refined_instruction": "Clear, actionable instruction for the web agent",
+    "top_k": <number_of_items_requested>
+}}
+
+Examples:
+- "Find best 5 phones" → {{"refined_instruction": "Find the best 5 smartphones, collecting their name, price, and URL.", "top_k": 5}}
+- "Search for laptops under 50000" → {{"refined_instruction": "Search for laptops under ₹50,000, collecting their name, price, and URL.", "top_k": 1}}
+- "Get me top 3 headphones" → {{"refined_instruction": "Get the top 3 headphones, collecting their name, price, and URL.", "top_k": 3}}
+
+Numbers to look for: top/best/first X, X items, few (=3), several (=5), some (=3)
+
+Response:
 """
 
 AGENT_PROMPT = """
@@ -229,11 +243,107 @@ Based on the provided HTML, screenshot, and your recent history, what is your ne
 - If any one selector is not working or the element is not found using that selector, then use the magic tool `extract_correct_selector_using_text` to find the correct selector for that element using its exact text content. Do not try to guess or modify the selector by yourself. And do not try to use any other selector from the history if that selector is not working. Always use the magic tool to find the correct selector.
 """
 
-def get_refined_prompt(url: str, query: str, provider: LLMProvider) -> Tuple[str, Dict]:
-    """Generates a refined, actionable prompt and returns the token usage."""
+def get_refined_prompt(url: str, query: str, provider: LLMProvider) -> Tuple[str, int, Dict]:
+    """Generates a refined, actionable prompt, extracts top_k, and returns token usage."""
     prompt = REFINER_PROMPT.format(url=url, query=query)
     response_text, usage = get_llm_response("You are a helpful assistant.", prompt, provider, images=[])
-    return response_text.strip(), usage
+    
+    try:
+        # Clean the response text first - remove markdown code blocks
+        cleaned_response = response_text.strip()
+        
+        # Remove markdown code block wrappers if present
+        markdown_patterns = [
+            r'```json\s*\n?(.*?)\n?```',  # ```json ... ```
+            r'```\s*\n?(.*?)\n?```',      # ``` ... ```
+            r'`(.*?)`',                   # `...`
+        ]
+        
+        for pattern in markdown_patterns:
+            match = re.search(pattern, cleaned_response, re.DOTALL)
+            if match:
+                cleaned_response = match.group(1).strip()
+                break
+        
+        # Try to find JSON object between first { and last }
+        if not cleaned_response.startswith('{'):
+            start = cleaned_response.find('{')
+            end = cleaned_response.rfind('}')
+            if start != -1 and end != -1 and end > start:
+                cleaned_response = cleaned_response[start:end+1]
+        
+        print(f"🔍 REFINER DEBUG:")
+        print(f"   Original response: {response_text[:200]}...")
+        print(f"   Cleaned response: {cleaned_response}")
+        
+        # Parse JSON response from LLM
+        response_data = json.loads(cleaned_response)
+        refined_instruction = response_data.get("refined_instruction", "").strip()
+        top_k = response_data.get("top_k", 1)
+        
+        # Validate top_k is a reasonable number
+        if not isinstance(top_k, int) or top_k < 1 or top_k > 50:
+            print(f"⚠️ Invalid top_k value {top_k}, defaulting to 1")
+            top_k = 1
+        
+        if not refined_instruction:
+            refined_instruction = f"Navigate to {url} and {query}"
+        
+        print(f"✅ Successfully extracted - refined_instruction: '{refined_instruction}', top_k: {top_k}")
+        return refined_instruction, top_k, usage
+        
+    except json.JSONDecodeError as e:
+        print(f"⚠️ JSON parsing failed: {e}")
+        print(f"⚠️ Response text: {response_text}")
+        print(f"⚠️ Cleaned text: {cleaned_response if 'cleaned_response' in locals() else 'None'}")
+        
+        # Fallback: extract number from original query using regex
+        print(f"⚠️ Using fallback regex extraction from original query")
+        
+        # Look for patterns like "top 5", "best 3", "first 10", etc.
+        number_patterns = [
+            r'(?:top|best|first|get me|show me)\s+(\d+)',
+            r'(\d+)\s+(?:items|results|products|things|gadgets)',
+        ]
+        
+        extracted_top_k = 1  # default
+        query_lower = query.lower()
+        
+        for pattern in number_patterns:
+            match = re.search(pattern, query_lower)
+            if match:
+                try:
+                    extracted_top_k = int(match.group(1))
+                    print(f"✅ Regex found top_k: {extracted_top_k}")
+                    break
+                except (IndexError, ValueError):
+                    continue
+        
+        # Check for word-based quantities
+        if 'few' in query_lower:
+            extracted_top_k = 3
+        elif 'several' in query_lower:
+            extracted_top_k = 5
+        elif 'some' in query_lower:
+            extracted_top_k = 3
+        
+        # Try to extract refined instruction from the response text
+        refined_instruction = response_text.strip() if response_text.strip() else f"Navigate to {url} and {query}"
+        
+        # If the response text contains instruction-like content, clean it up
+        if "refined_instruction" in response_text:
+            # Try to extract the instruction value even if JSON parsing failed
+            instruction_match = re.search(r'"refined_instruction":\s*"([^"]*(?:\\.[^"]*)*)"', response_text, re.DOTALL)
+            if instruction_match:
+                refined_instruction = instruction_match.group(1)
+        
+        print(f"✅ Fallback extraction complete - refined_instruction: '{refined_instruction}', top_k: {extracted_top_k}")
+        return refined_instruction, extracted_top_k, usage
+    
+    except Exception as e:
+        print(f"❌ Critical error in prompt refinement: {e}")
+        print(f"❌ Raw response: {response_text}")
+        return f"Navigate to {url} and {query}", 1, {"input_tokens": 0, "output_tokens": 0}
 
 def get_agent_action(query: str, url: str, html: str, provider: LLMProvider, screenshot_path: Union[Path, None], history: str, failed_actions: Dict[str, int] = None) -> Tuple[dict, Dict]:
     """Gets the next thought and action from the agent, and returns token usage."""

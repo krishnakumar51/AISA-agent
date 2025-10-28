@@ -135,10 +135,40 @@ class UniversalCaptchaSolver:
         }
         
         try:
-            # LAYER 1: Advanced JavaScript Detection with Extended Coverage
-            js_detection = await page.evaluate(r"""
-                (() => {
-                    const results = [];
+            # Enhanced context validation before evaluation
+            if page.is_closed():
+                print("⚠️ Page is closed, skipping CAPTCHA detection")
+                return captcha_info
+            
+            # Check if page is in a navigation state
+            try:
+                current_url = page.url
+                await page.wait_for_load_state('domcontentloaded', timeout=3000)
+                
+                # Verify URL didn't change during wait (navigation detection)
+                if page.url != current_url:
+                    print("⚠️ Navigation detected during preparation, aborting detection")
+                    return captcha_info
+                    
+            except Exception as load_error:
+                print(f"⚠️ Page load state check failed: {load_error}")
+                # Don't return here, continue with detection but be more careful
+            
+            # LAYER 1: Advanced JavaScript Detection with Enhanced Error Handling
+            try:
+                # Final page validity check before JavaScript evaluation
+                if page.is_closed():
+                    print("⚠️ Page closed before JavaScript evaluation")
+                    return captcha_info
+                js_detection = await page.evaluate(r"""
+                    (() => {
+                        try {
+                            // Add immediate context check
+                            if (!document || !document.documentElement) {
+                                return [];
+                            }
+                            
+                            const results = [];
                     
                     // ═══════════════════════════════════════════════════════════
                     // CLOUDFLARE TURNSTILE DETECTION (2024 Updated)
@@ -469,13 +499,30 @@ class UniversalCaptchaSolver:
                     
                     for (const pattern of textPatterns) {
                         console.log(`Searching for text pattern: "${pattern}"`);
-                        const textNodes = document.evaluate(
-                            `//text()[contains(., '${pattern}')]`,
-                            document,
-                            null,
-                            XPathResult.UNORDERED_NODE_SNAPSHOT_TYPE,
-                            null
-                        );
+                        
+                        try {
+                            // Fixed XPath quote escaping - use concat() for patterns with quotes
+                            let xpathQuery;
+                            if (pattern.includes("'")) {
+                                // For patterns with single quotes, use concat() method
+                                const parts = pattern.split("'");
+                                let concatParts = [];
+                                for (let i = 0; i < parts.length; i++) {
+                                    if (parts[i]) concatParts.push(`'${parts[i]}'`);
+                                    if (i < parts.length - 1) concatParts.push('"\\'"');
+                                }
+                                xpathQuery = `//text()[contains(., concat(${concatParts.join(', ')}))]`;
+                            } else {
+                                xpathQuery = `//text()[contains(., '${pattern}')]`;
+                            }
+                            
+                            const textNodes = document.evaluate(
+                                xpathQuery,
+                                document,
+                                null,
+                                XPathResult.UNORDERED_NODE_SNAPSHOT_TYPE,
+                                null
+                            );
                         
                         console.log(`Found ${textNodes.snapshotLength} text nodes matching "${pattern}"`);
                         
@@ -549,6 +596,65 @@ class UniversalCaptchaSolver:
                                 console.log(`❌ No sitekey found for text pattern "${pattern}"`);
                             }
                         }
+                        
+                        } catch (xpathError) {
+                            console.log(`❌ XPath error for pattern "${pattern}":`, xpathError);
+                            
+                            // Fallback: Use simple text search without XPath
+                            try {
+                                // Enhanced safety checks for document body
+                                const rootElement = document.body || document.documentElement || document;
+                                if (!rootElement) {
+                                    console.log(`⚠️ No valid root element for TreeWalker fallback`);
+                                    continue;
+                                }
+                                
+                                const walker = document.createTreeWalker(
+                                    rootElement,
+                                    NodeFilter.SHOW_TEXT,
+                                    null,
+                                    false
+                                );
+                                
+                                let textNode;
+                                while (textNode = walker.nextNode()) {
+                                    try {
+                                        if (textNode.textContent && textNode.textContent.includes(pattern)) {
+                                            // Found text, search for nearby sitekey
+                                            let element = textNode.parentElement;
+                                            let level = 0;
+                                            
+                                            while (element && level < 5) {
+                                            const sitekey = element.getAttribute('data-sitekey') ||
+                                                          element.getAttribute('data-key') ||
+                                                          element.getAttribute('sitekey') ||
+                                                          element.getAttribute('data-recaptcha-sitekey');
+                                            
+                                            if (sitekey) {
+                                                console.log(`✅ Fallback found reCAPTCHA via text "${pattern}" with sitekey: ${sitekey}`);
+                                                results.push({
+                                                    type: 'recaptcha_v2',
+                                                    sitekey: sitekey,
+                                                    confidence: 82,
+                                                    method: 'text_fallback',
+                                                    selector: null,
+                                                    action: 'verify'
+                                                });
+                                                break;
+                                            }
+                                            element = element.parentElement;
+                                            level++;
+                                        }
+                                    }
+                                    } catch (nodeError) {
+                                        console.log(`⚠️ Node processing error:`, nodeError);
+                                        continue; // Skip problematic nodes
+                                    }
+                                }
+                            } catch (fallbackError) {
+                                console.log(`❌ Fallback text search also failed for "${pattern}":`, fallbackError);
+                            }
+                        }
                     }
                     
                     // ═══════════════════════════════════════════════════════════
@@ -608,59 +714,79 @@ class UniversalCaptchaSolver:
                     
                     // Sort by confidence and return
                     return results.sort((a, b) => b.confidence - a.confidence);
-                })()
-            """)
+                        } catch (jsError) {
+                            console.log('JavaScript evaluation error:', jsError);
+                            return [];
+                        }
+                    })();
+                """, timeout=10000)
+            except Exception as eval_error:
+                error_msg = str(eval_error).lower()
+                if any(keyword in error_msg for keyword in ['destroyed', 'navigation', 'context']):
+                    print(f"⚠️ Navigation detected during evaluation: {eval_error}")
+                    return captcha_info
+                else:
+                    print(f"⚠️ JavaScript evaluation failed: {eval_error}")
+                    js_detection = []
             
             if js_detection and len(js_detection) > 0:
                 best_match = js_detection[0]
                 print(f"✅ CAPTCHA DETECTED: {best_match['type']} - {best_match.get('sitekey', 'N/A')[:30]}... (confidence: {best_match['confidence']}%)")
                 return best_match
             
-            # LAYER 2: Iframe Deep Inspection
+            # LAYER 2: Iframe Deep Inspection with Enhanced Error Handling
             print("🔄 Layer 2: Iframe inspection...")
-            iframes = await page.query_selector_all('iframe')
-            for iframe in iframes:
-                try:
-                    src = await iframe.get_attribute('src') or ''
+            try:
+                # Check if page is still valid before iframe inspection
+                if page.is_closed():
+                    print("⚠️ Page closed during iframe inspection")
+                    return captcha_info
                     
-                    # Parse iframe URL
-                    if 'recaptcha' in src or 'google.com/recaptcha' in src:
-                        parsed = urlparse(src)
-                        params = parse_qs(parsed.query)
-                        sitekey = params.get('k', [None])[0]
-                        if sitekey:
-                            return {
-                                'type': 'recaptcha_v2',
-                                'sitekey': sitekey,
-                                'confidence': 75,
-                                'method': 'iframe_inspection'
-                            }
-                    
-                    elif 'turnstile' in src or 'cloudflare' in src:
-                        parsed = urlparse(src)
-                        params = parse_qs(parsed.query)
-                        sitekey = params.get('sitekey', [None])[0]
-                        if sitekey:
-                            return {
-                                'type': 'turnstile',
-                                'sitekey': sitekey,
-                                'confidence': 75,
-                                'method': 'iframe_inspection'
-                            }
-                    
-                    elif 'hcaptcha' in src:
-                        parsed = urlparse(src)
-                        params = parse_qs(parsed.query)
-                        sitekey = params.get('sitekey', [None])[0]
-                        if sitekey:
-                            return {
-                                'type': 'hcaptcha',
-                                'sitekey': sitekey,
-                                'confidence': 75,
-                                'method': 'iframe_inspection'
-                            }
-                except Exception as e:
-                    continue
+                iframes = await page.query_selector_all('iframe')
+                for iframe in iframes:
+                    try:
+                        src = await iframe.get_attribute('src') or ''
+                        
+                        # Parse iframe URL
+                        if 'recaptcha' in src or 'google.com/recaptcha' in src:
+                            parsed = urlparse(src)
+                            params = parse_qs(parsed.query)
+                            sitekey = params.get('k', [None])[0]
+                            if sitekey:
+                                return {
+                                    'type': 'recaptcha_v2',
+                                    'sitekey': sitekey,
+                                    'confidence': 75,
+                                    'method': 'iframe_inspection'
+                                }
+                        
+                        elif 'turnstile' in src or 'cloudflare' in src:
+                            parsed = urlparse(src)
+                            params = parse_qs(parsed.query)
+                            sitekey = params.get('sitekey', [None])[0]
+                            if sitekey:
+                                return {
+                                    'type': 'turnstile',
+                                    'sitekey': sitekey,
+                                    'confidence': 75,
+                                    'method': 'iframe_inspection'
+                                }
+                        
+                        elif 'hcaptcha' in src:
+                            parsed = urlparse(src)
+                            params = parse_qs(parsed.query)
+                            sitekey = params.get('sitekey', [None])[0]
+                            if sitekey:
+                                return {
+                                    'type': 'hcaptcha',
+                                    'sitekey': sitekey,
+                                    'confidence': 75,
+                                    'method': 'iframe_inspection'
+                                }
+                    except Exception as e:
+                        continue
+            except Exception as iframe_error:
+                print(f"⚠️ Iframe inspection error: {iframe_error}")
             
             # LAYER 3: DOM Fallback Scanning
             print("🔄 Layer 3: DOM fallback scanning...")
@@ -682,7 +808,12 @@ class UniversalCaptchaSolver:
                     continue
             
         except Exception as e:
-            print(f"⚠️ Detection error: {e}")
+            error_msg = str(e).lower()
+            if any(keyword in error_msg for keyword in ['destroyed', 'navigation', 'context']):
+                print(f"📱 Navigation detected, stopping CAPTCHA detection: {e}")
+                return captcha_info
+            else:
+                print(f"⚠️ Detection error: {e}")
         
         # RETRY LOGIC: If nothing found and retries remaining, wait and retry
         if retry_count < self.max_detection_retries - 1:
