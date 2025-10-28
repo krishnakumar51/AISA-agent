@@ -1916,40 +1916,267 @@ async def execute_action_node(state: AgentState) -> AgentState:
             ]
             
             if any(dismiss_text in search_text.lower() for dismiss_text in common_dismiss_texts):
-                print("🎯 Using proactive popup killer for common dismiss text")
+                print("🎯 Using enhanced proactive popup killer for common dismiss text")
                 try:
-                    # Trigger the popup killer specifically for this text
-                    popup_killer_trigger = f"""
+                    # Enhanced popup killer with multi-phase detection strategy
+                    popup_killer_enhanced = f"""
                     (function() {{
                         const searchText = "{search_text.lower()}";
-                        const buttons = document.querySelectorAll('button, a, [role="button"], [onclick], .close, .dismiss');
+                        let clickedElement = null;
                         
-                        for (const btn of buttons) {{
-                            const text = (btn.textContent || btn.innerText || '').toLowerCase().trim();
-                            const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+                        console.log('🔍 Enhanced popup killer starting for:', searchText);
+                        
+                        // PHASE 1: Direct text matching with comprehensive selectors
+                        const dismissSelectors = [
+                            // Buttons and interactive elements
+                            'button', 'a[href]', '[role="button"]', '[onclick]', 
+                            'input[type="button"]', 'input[type="submit"]',
                             
-                            if (text.includes(searchText) || ariaLabel.includes(searchText)) {{
+                            // Common popup dismiss classes and IDs
+                            '.close', '.dismiss', '.cancel', '.decline', '.reject',
+                            '.close-btn', '.close-button', '.dismiss-btn', '.cancel-btn',
+                            '.modal-close', '.popup-close', '.overlay-close',
+                            '.cookie-close', '.banner-close', '.notification-close',
+                            '#close', '#dismiss', '#cancel', '#decline',
+                            
+                            // Aria and data attributes
+                            '[aria-label*="close"]', '[aria-label*="dismiss"]', 
+                            '[aria-label*="cancel"]', '[aria-label*="decline"]',
+                            '[data-dismiss]', '[data-close]', '[data-cancel]',
+                            '[data-dismiss="modal"]', '[data-dismiss="popup"]',
+                            
+                            // Common popup container children
+                            '[role="dialog"] button', '[role="alertdialog"] button',
+                            '.modal button', '.popup button', '.overlay button',
+                            '.dialog button', '.lightbox button',
+                            
+                            // Cookie and consent specific
+                            '.cookie-banner button', '.consent-banner button',
+                            '#cookieConsent button', '[class*="cookie"] button',
+                            '[class*="consent"] button', '[id*="cookie"] button',
+                            
+                            // Newsletter and subscription popups
+                            '.newsletter-popup button', '.subscription-modal button',
+                            '[class*="newsletter"] button', '[class*="subscribe"] button'
+                        ];
+                        
+                        // Search through all dismiss selectors
+                        for (const selector of dismissSelectors) {{
+                            try {{
+                                const elements = document.querySelectorAll(selector);
+                                console.log(`Checking selector "${{selector}}": found ${{elements.length}} elements`);
+                                
+                                for (const element of elements) {{
+                                    // Skip hidden elements
+                                    const style = window.getComputedStyle(element);
+                                    if (style.display === 'none' || style.visibility === 'hidden' || 
+                                        element.offsetParent === null) {{
+                                        continue;
+                                    }}
+                                    
+                                    // Get all text content variations
+                                    const textContent = (element.textContent || '').toLowerCase().trim();
+                                    const innerText = (element.innerText || '').toLowerCase().trim();
+                                    const ariaLabel = (element.getAttribute('aria-label') || '').toLowerCase();
+                                    const title = (element.getAttribute('title') || '').toLowerCase();
+                                    const value = (element.getAttribute('value') || '').toLowerCase();
+                                    const alt = (element.getAttribute('alt') || '').toLowerCase();
+                                    
+                                    // Check if any text matches
+                                    const allTexts = [textContent, innerText, ariaLabel, title, value, alt];
+                                    const hasMatch = allTexts.some(text => 
+                                        text && (text.includes(searchText) || searchText.includes(text.trim()))
+                                    );
+                                    
+                                    if (hasMatch) {{
+                                        console.log('✅ Found matching element:', element);
+                                        console.log('  Text content:', textContent);
+                                        console.log('  Aria label:', ariaLabel);
+                                        
+                                        try {{
+                                            // Multiple click strategies
+                                            if (element.click) {{
+                                                element.click();
+                                                clickedElement = element;
+                                                console.log('🎯 Successfully clicked element via .click()');
+                                                return true;
+                                            }}
+                                            
+                                            // Fallback: dispatch click event
+                                            const clickEvent = new MouseEvent('click', {{
+                                                bubbles: true,
+                                                cancelable: true,
+                                                view: window
+                                            }});
+                                            element.dispatchEvent(clickEvent);
+                                            clickedElement = element;
+                                            console.log('🎯 Successfully clicked element via event dispatch');
+                                            return true;
+                                            
+                                        }} catch (clickError) {{
+                                            console.log('❌ Click failed:', clickError);
+                                            continue;
+                                        }}
+                                    }}
+                                }}
+                            }} catch (selectorError) {{
+                                console.log(`Selector "${{selector}}" failed:`, selectorError);
+                                continue;
+                            }}
+                        }}
+                        
+                        // PHASE 2: Fuzzy text matching for partial matches
+                        console.log('🔍 Phase 2: Fuzzy text matching');
+                        const allClickableElements = document.querySelectorAll(
+                            'button, a, [role="button"], [onclick], input[type="button"], input[type="submit"], ' +
+                            '[tabindex], [class*="btn"], [class*="button"], [class*="click"]'
+                        );
+                        
+                        for (const element of allClickableElements) {{
+                            const style = window.getComputedStyle(element);
+                            if (style.display === 'none' || style.visibility === 'hidden' || 
+                                element.offsetParent === null) {{
+                                continue;
+                            }}
+                            
+                            const textContent = (element.textContent || '').toLowerCase().trim();
+                            const ariaLabel = (element.getAttribute('aria-label') || '').toLowerCase();
+                            
+                            // Fuzzy matching: check if search text is contained in element text or vice versa
+                            if ((textContent && (
+                                textContent.includes(searchText) || 
+                                searchText.includes(textContent) ||
+                                // Check for similar words (close vs dismiss, ok vs okay)
+                                (searchText.includes('accept') && textContent.includes('accept')) ||
+                                (searchText.includes('close') && (textContent.includes('close') || textContent.includes('×') || textContent.includes('✕'))) ||
+                                (searchText.includes('ok') && (textContent.includes('ok') || textContent.includes('okay'))) ||
+                                (searchText.includes('dismiss') && (textContent.includes('dismiss') || textContent.includes('close')))
+                            )) || (ariaLabel && (
+                                ariaLabel.includes(searchText) || searchText.includes(ariaLabel)
+                            ))) {{
+                                
                                 try {{
-                                    btn.click();
-                                    console.log('🎯 Popup killer clicked:', btn);
+                                    element.click();
+                                    clickedElement = element;
+                                    console.log('🎯 Fuzzy match click successful:', element);
                                     return true;
                                 }} catch (e) {{
                                     continue;
                                 }}
                             }}
                         }}
+                        
+                        // PHASE 3: Common popup dismiss patterns (even without text match)
+                        console.log('🔍 Phase 3: Common dismiss patterns');
+                        const commonDismissPatterns = [
+                            // X buttons and close icons
+                            'button[aria-label*="close"]',
+                            'button[title*="close"]', 
+                            '[class*="close"][role="button"]',
+                            
+                            // Modal and dialog closes
+                            '[role="dialog"] button:last-child',
+                            '[role="alertdialog"] button',
+                            '.modal-header button', '.modal-footer button:last-child',
+                            
+                            // Data attribute patterns
+                            '[data-dismiss="modal"]', '[data-dismiss="popup"]',
+                            '[data-close="true"]', '[data-action="close"]',
+                            
+                            // Cookie consent patterns
+                            '.cookie-notice button:first-child',
+                            '.cookie-banner button:first-child',
+                            '#cookieConsent button',
+                            
+                            // Position-based (likely close buttons in top-right)
+                            '.modal-header button:last-child',
+                            '.popup-header button:last-child'
+                        ];
+                        
+                        for (const pattern of commonDismissPatterns) {{
+                            try {{
+                                const elements = document.querySelectorAll(pattern);
+                                for (const element of elements) {{
+                                    if (element.offsetParent !== null) {{
+                                        try {{
+                                            element.click();
+                                            clickedElement = element;
+                                            console.log('🎯 Pattern match click successful:', pattern);
+                                            return true;
+                                        }} catch (e) {{
+                                            continue;
+                                        }}
+                                    }}
+                                }}
+                            }} catch (e) {{
+                                continue;
+                            }}
+                        }}
+                        
+                        // PHASE 4: Last resort - look for any visible button in popup containers
+                        console.log('🔍 Phase 4: Last resort popup container search');
+                        const popupContainers = document.querySelectorAll(
+                            '[role="dialog"], [role="alertdialog"], .modal, .popup, .overlay, ' +
+                            '.lightbox, .dialog, [aria-modal="true"], [class*="popup"], [class*="modal"]'
+                        );
+                        
+                        for (const container of popupContainers) {{
+                            if (container.offsetParent !== null) {{
+                                const buttons = container.querySelectorAll('button, a[href], [role="button"]');
+                                
+                                // Try the last button first (often "Cancel" or "Close")
+                                for (let i = buttons.length - 1; i >= 0; i--) {{
+                                    const button = buttons[i];
+                                    if (button.offsetParent !== null) {{
+                                        const buttonText = (button.textContent || '').toLowerCase();
+                                        
+                                        // Prefer buttons with dismiss-like text
+                                        if (buttonText.includes('close') || buttonText.includes('cancel') || 
+                                            buttonText.includes('dismiss') || buttonText.includes('no') ||
+                                            buttonText === '×' || buttonText === '✕') {{
+                                            
+                                            try {{
+                                                button.click();
+                                                clickedElement = button;
+                                                console.log('🎯 Container button click successful:', button);
+                                                return true;
+                                            }} catch (e) {{
+                                                continue;
+                                            }}
+                                        }}
+                                    }}
+                                }}
+                                
+                                // If no dismiss-like button found, try any button
+                                if (buttons.length > 0) {{
+                                    const lastButton = buttons[buttons.length - 1];
+                                    if (lastButton.offsetParent !== null) {{
+                                        try {{
+                                            lastButton.click();
+                                            clickedElement = lastButton;
+                                            console.log('🎯 Last resort button click:', lastButton);
+                                            return true;
+                                        }} catch (e) {{
+                                            // Continue to next container
+                                        }}
+                                    }}
+                                }}
+                            }}
+                        }}
+                        
+                        console.log('❌ No popup dismiss element found');
                         return false;
                     }})();
                     """
                     
-                    killed = await page.evaluate(popup_killer_trigger)
+                    killed = await page.evaluate(popup_killer_enhanced)
                     if killed:
-                        state['history'].append(f"Step {state['step']}: ✅ Popup dismissed using popup killer for text '{search_text}'")
-                        await page.wait_for_timeout(1000)  # Wait for popup to disappear
+                        state['history'].append(f"Step {state['step']}: ✅ Popup dismissed using enhanced popup killer for text '{search_text}'")
+                        await page.wait_for_timeout(1500)  # Wait longer for popup to disappear
                         return state
                         
                 except Exception as e:
-                    print(f"Popup killer approach failed: {e}")
+                    print(f"Enhanced popup killer failed: {e}")
             
             # Strategy 2: Enhanced element search with popup-specific selectors
             try:
@@ -2677,14 +2904,14 @@ async def run_job(job_id: str, payload: dict, device_id: str = "emulator-5554", 
         "steps": []
     }
 
-    ngrok_base_url = "https://726c88b92d78.ngrok.app"
+    ngrok_base_url = "https://618f8235f965.ngrok.app"
 
     # Step 1: Get actual debugger URL
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{ngrok_base_url}/json/version") as resp:
             data = await resp.json()
             websocket_path = data["webSocketDebuggerUrl"].split("/devtools/")[1]
-            cdp_endpoint = f"wss://726c88b92d78.ngrok.app/devtools/{websocket_path}"
+            cdp_endpoint = f"wss://618f8235f965.ngrok.app/devtools/{websocket_path}"
     
     async with async_playwright() as p:
         browser = await p.chromium.connect_over_cdp(cdp_endpoint)
@@ -2758,7 +2985,7 @@ async def start_search(req: SearchRequest):
     # loop.run_in_executor(None, run_job, job_id, req.dict())
     # asyncio.create_task(run_job(job_id, {**req.model_dump(), "device_id": "emulator-5554"}))
     # asyncio.create_task(run_job(job_id, {**req.model_dump(), "device_id": "https://2b93471dc9cf.ngrok-free.app"}))
-    asyncio.create_task(run_job(job_id, {**req.model_dump(), "device_id": "https://726c88b92d78.ngrok.app"}))
+    asyncio.create_task(run_job(job_id, {**req.model_dump(), "device_id": "https://618f8235f965.ngrok.app"}))
     return {"job_id": job_id, "stream_url": f"/stream/{job_id}", "result_url": f"/result/{job_id}"}
 
 @app.get("/stream/{job_id}")
