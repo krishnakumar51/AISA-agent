@@ -23,9 +23,16 @@ from bs4 import BeautifulSoup
 
 from llm import LLMProvider, get_refined_prompt, get_agent_action
 from config import SCREENSHOTS_DIR, ANTHROPIC_MODEL, GROQ_MODEL, OPENAI_MODEL
+# CAPTCHA Integration - Universal CAPTCHA solver for all types
+from captcha import UniversalCaptchaSolver
 
 # --- FastAPI App Initialization ---
 app = FastAPI(title="LangGraph Web Agent with Memory")
+
+# --- CAPTCHA Solver Integration ---
+# Global CAPTCHA solver instance - handles all CAPTCHA types universally
+# Supports: Cloudflare Turnstile, reCAPTCHA v2/v3, hCAPTCHA, Image CAPTCHAs
+captcha_solver = UniversalCaptchaSolver()
 
 # --- NEW: Helper functions for enhanced HITL ---
 
@@ -792,6 +799,11 @@ class AgentState(TypedDict):
     user_input_request: dict  # Stores the current input request
     user_input_response: str  # Stores the user's response
     user_input_flow_active: bool  # Tracks if we're in a user input flow to prevent interference
+    # CAPTCHA handling state
+    captcha_detected: Dict[str, Any]  # CAPTCHA detection results (type, sitekey, confidence)
+    captcha_solved: bool              # Whether detected CAPTCHA was successfully solved
+    captcha_attempts: List[Dict[str, Any]]  # History of CAPTCHA solving attempts
+    captcha_service_used: str         # Which service successfully solved the CAPTCHA
 
 # --- NEW: Enhanced memory context builder ---
 def build_enhanced_memory_context(state: AgentState) -> str:
@@ -881,6 +893,30 @@ def build_enhanced_memory_context(state: AgentState) -> str:
         for text, selectors in list(selector_attempts.items())[-3:]:  # Last 3 texts
             context += f"\n  • '{text}': {len(selectors)} selectors tested"
         context += f"\n💡 TIP: Use different text if current selectors aren't working"
+    
+    # 🤖 CAPTCHA STATUS AND HISTORY
+    captcha_detected = state.get('captcha_detected', {})
+    captcha_solved = state.get('captcha_solved', False)
+    captcha_attempts = state.get('captcha_attempts', [])
+    
+    if captcha_detected.get('type'):
+        context += f"\n\n🤖 CAPTCHA STATUS:"
+        context += f"\n  Type: {captcha_detected['type'].upper()}"
+        context += f"\n  Confidence: {captcha_detected.get('confidence', 0)}%"
+        context += f"\n  Status: {'✅ SOLVED' if captcha_solved else '⏳ PENDING'}"
+        
+        if captcha_solved:
+            service_used = state.get('captcha_service_used', 'Unknown')
+            context += f"\n  Service: {service_used}"
+        else:
+            context += f"\n💡 REQUIRED ACTION: Use 'solve_captcha' to handle this challenge"
+    
+    if captcha_attempts:
+        context += f"\n\n🔄 CAPTCHA ATTEMPT HISTORY ({len(captcha_attempts)} attempts):"
+        for i, attempt in enumerate(captcha_attempts[-3:], 1):  # Last 3 attempts
+            status = "✅" if attempt.get('solved', False) else "❌"
+            service = attempt.get('service', 'Unknown')
+            context += f"\n  {status} Attempt {i}: {service} - {attempt.get('type', 'Unknown')}"
     
     return context
 
@@ -1094,6 +1130,33 @@ async def navigate_to_page(state: AgentState) -> AgentState:
             await install_popup_killer(state['page'])
     except Exception as e:
         print(f"⚠️ Popup killer installation failed (non-critical): {e}")
+    
+    # 🤖 AUTOMATIC CAPTCHA DETECTION ON PAGE LOAD
+    # Proactively scan for CAPTCHAs immediately after navigation
+    # This helps the agent identify CAPTCHA challenges early in the process
+    try:
+        print(f"🔍 PROACTIVE CAPTCHA SCAN: Checking for CAPTCHA challenges on page load...")
+        captcha_detection = await captcha_solver.detect_captcha_universal(state['page'])
+        
+        if captcha_detection['type']:
+            # CAPTCHA detected - log for agent awareness
+            detection_msg = f"🚨 CAPTCHA DETECTED ON PAGE LOAD: {captcha_detection['type'].upper()} found (confidence: {captcha_detection['confidence']}%)"
+            state['history'].append(f"Navigation: {detection_msg}")
+            print(detection_msg)
+            
+            # Store detection info for agent to use
+            state['captcha_detected'] = captcha_detection
+            push_status(state['job_id'], "captcha_detected", {
+                "type": captcha_detection['type'],
+                "confidence": captcha_detection['confidence'],
+                "sitekey": captcha_detection.get('sitekey', 'unknown')
+            })
+        else:
+            print(f"✅ CAPTCHA SCAN CLEAR: No CAPTCHA challenges detected on initial page load")
+            
+    except Exception as e:
+        print(f"⚠️ CAPTCHA detection during navigation failed (non-critical): {e}")
+    
     # Only clear input fields once during initial navigation (step 1)
     # Don't clear if we're waiting for or have received user input
     should_clear_inputs = (
@@ -2083,6 +2146,57 @@ async def execute_action_node(state: AgentState) -> AgentState:
             
             # If all strategies failed
             raise ValueError(f"Could not find or dismiss popup with text '{search_text}' using any strategy")
+        
+        elif action_type == "solve_captcha":
+            # 🤖 UNIVERSAL CAPTCHA SOLVER INTEGRATION
+            # This action automatically detects and solves any CAPTCHA type present on the page:
+            # - Cloudflare Turnstile (0x, 3x sitekeys)
+            # - reCAPTCHA v2/v3 (6L sitekeys) 
+            # - hCAPTCHA (all variants)
+            # - Image CAPTCHAs and custom implementations
+            print(f"🤖 CAPTCHA SOLVER: Scanning page for CAPTCHA challenges...")
+            
+            try:
+                # Call the universal CAPTCHA solver - it handles everything automatically
+                captcha_result = await captcha_solver.solve_captcha_if_present(page, page.url)
+                
+                # Process the results and update agent state
+                if captcha_result['found']:
+                    if captcha_result['solved']:
+                        # SUCCESS: CAPTCHA was found and solved successfully
+                        success_msg = f"✅ CAPTCHA SOLVED: {captcha_result['type'].upper()} solved using {captcha_result['service']} service"
+                        state['history'].append(f"Step {state['step']}: {success_msg}")
+                        print(success_msg)
+                        
+                        # Optional: Add brief wait for page to process the solution
+                        await page.wait_for_timeout(2000)
+                        
+                    else:
+                        # CAPTCHA found but solving failed
+                        error_msg = f"❌ CAPTCHA SOLVING FAILED: {captcha_result['type'].upper()} - {captcha_result.get('error', 'Unknown error')}"
+                        state['history'].append(f"Step {state['step']}: {error_msg}")
+                        print(error_msg)
+                        
+                        # Don't raise exception - let agent continue with other strategies
+                        
+                else:
+                    # No CAPTCHA detected on the page
+                    no_captcha_msg = "ℹ️ NO CAPTCHA DETECTED: Page scan complete - no CAPTCHA challenges found"
+                    state['history'].append(f"Step {state['step']}: {no_captcha_msg}")
+                    print(no_captcha_msg)
+                
+            except Exception as captcha_error:
+                # Handle any unexpected errors in CAPTCHA processing
+                error_msg = f"❌ CAPTCHA SOLVER ERROR: Unexpected error occurred - {str(captcha_error)}"
+                state['history'].append(f"Step {state['step']}: {error_msg}")
+                print(error_msg)
+                
+                # Log the full error for debugging
+                import traceback
+                print(f"🔍 CAPTCHA ERROR DETAILS:")
+                print(traceback.format_exc())
+                
+                # Don't raise exception - allow agent to continue
         
         elif action_type == "extract_correct_selector_using_text":
             search_text = action.get("text", "")

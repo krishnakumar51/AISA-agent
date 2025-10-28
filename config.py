@@ -19,6 +19,15 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o") # Vision-capable
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama3-70b-8192") # No Vision
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929") # Vision-capable
 
+# --- CAPTCHA Service API Keys ---
+# Fetch CAPTCHA solving service API keys from environment variables.
+# Multi-tier fallback system for maximum reliability.
+CAPSOLVER_API_KEY = os.getenv("CAPSOLVER_API_KEY")  # Tier 1
+TWOCAPTCHA_API_KEY = os.getenv("TWOCAPTCHA_API_KEY")  # Tier 2
+ANTICAPTCHA_API_KEY = os.getenv("ANTICAPTCHA_API_KEY")  # Tier 3
+DBC_USERNAME = os.getenv("DBC_USERNAME")  # Tier 4
+DBC_PASSWORD = os.getenv("DBC_PASSWORD")  # Tier 4
+
 # --- Global Directories ---
 # Ensures a consistent directory structure for generated artifacts.
 PROJECT_ROOT = Path(__file__).parent
@@ -53,3 +62,25 @@ if OPENAI_API_KEY:
         print("✅ OpenAI client initialized.")
     except Exception as e:
         print(f"⚠️ OpenAI client failed to initialize: {e}")
+
+# --- CAPTCHA Keys Status ---
+# Display the status of CAPTCHA service API keys
+if CAPSOLVER_API_KEY:
+    print("✅ CapSolver API key loaded.")
+else:
+    print("⚠️ CapSolver API key not found in environment.")
+
+if TWOCAPTCHA_API_KEY:
+    print("✅ 2Captcha API key loaded.")
+else:
+    print("⚠️ 2Captcha API key not found in environment.")
+
+if ANTICAPTCHA_API_KEY:
+    print("✅ AntiCaptcha API key loaded.")
+else:
+    print("⚠️ AntiCaptcha API key not found in environment.")
+
+if DBC_USERNAME and DBC_PASSWORD:
+    print("✅ DeathByCaptcha credentials loaded.")
+else:
+    print("⚠️ DeathByCaptcha credentials not found in environment.")

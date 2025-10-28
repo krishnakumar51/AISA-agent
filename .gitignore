@@ -6,6 +6,7 @@ flip/
 analysis/
 amazon/
 iherb/
+caps/
 cap.py
 old.py
 report.csv
