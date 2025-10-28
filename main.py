@@ -588,6 +588,158 @@ def save_analysis_report(analysis_data: dict):
         print(f"Error updating CSV report: {e}")
 
 
+
+
+
+async def install_popup_killer(page):
+    """
+    🛡️ PROACTIVE POPUP KILLER - MutationObserver-based instant removal
+    Runs in browser context with zero Python overhead
+    """
+    popup_killer_script = """
+    (function() {
+        const DISMISS_TEXTS = [
+            "accept", "accept all", "accept cookies", "agree", "agree and continue",
+            "i accept", "i agree", "ok", "okay", "yes", "allow", "allow all",
+            "got it", "understood", "sounds good", "close", "dismiss", "no thanks",
+            "not now", "maybe later", "later", "skip", "skip for now", "remind me later",
+            "not interested", "continue", "proceed", "next", "go ahead", "let's go",
+            "decline", "reject", "refuse", "no", "cancel", "don't show again",
+            "do not show", "only necessary", "necessary only", "essential only",
+            "reject all", "decline all", "manage preferences", "continue without",
+            "skip sign in", "skip login", "browse as guest", "continue as guest",
+            "no account", "no thank you", "unsubscribe", "don't subscribe",
+            "×", "✕", "✖", "⨯", "close dialog", "close modal", "close popup",
+            "dismiss notification", "close banner", "close alert"
+        ];
+        
+        const POPUP_SELECTORS = [
+            "[role='dialog']", "[role='alertdialog']", ".modal", ".popup", 
+            ".overlay", ".lightbox", ".dialog", "#cookie-banner", ".cookie-banner",
+            "[class*='cookie']", "#cookieConsent", ".cookie-consent", "[id*='cookie']",
+            ".overlay-wrapper", ".modal-backdrop", ".popup-overlay", "[class*='overlay']",
+            "[class*='backdrop']", ".newsletter-popup", ".subscription-modal",
+            "[class*='newsletter']", ".close-btn", ".close-button", "[aria-label*='close']",
+            "[aria-label*='dismiss']", "button.close", ".modal-close"
+        ];
+        
+        let processedElements = new WeakSet();
+        let killCount = 0;
+        
+        function normalizeText(text) {
+            return text.toLowerCase().trim().replace(/\\s+/g, ' ');
+        }
+        
+        function tryKillPopup(element) {
+            if (!element || processedElements.has(element)) return false;
+            processedElements.add(element);
+            
+            const style = window.getComputedStyle(element);
+            if (style.display === 'none' || style.visibility === 'hidden') return false;
+            
+            const clickables = element.querySelectorAll('button, a, [role="button"], [onclick]');
+            for (const btn of clickables) {
+                const text = normalizeText(btn.textContent || btn.innerText || '');
+                const ariaLabel = normalizeText(btn.getAttribute('aria-label') || '');
+                
+                for (const dismissText of DISMISS_TEXTS) {
+                    if (text.includes(dismissText) || ariaLabel.includes(dismissText)) {
+                        try {
+                            btn.click();
+                            killCount++;
+                            console.log(`🎯 Popup killed #${killCount}: clicked "${btn.textContent}" in`, element);
+                            return true;
+                        } catch (e) {
+                            continue;
+                        }
+                    }
+                }
+            }
+            
+            if (element.tagName === 'BUTTON' || element.getAttribute('role') === 'button') {
+                const text = normalizeText(element.textContent || '');
+                for (const dismissText of DISMISS_TEXTS) {
+                    if (text.includes(dismissText)) {
+                        try {
+                            element.click();
+                            killCount++;
+                            console.log(`🎯 Popup killed #${killCount}: direct click`, element);
+                            return true;
+                        } catch (e) {}
+                    }
+                }
+            }
+            
+            return false;
+        }
+        
+        function scanAndKill() {
+            for (const selector of POPUP_SELECTORS) {
+                try {
+                    const popups = document.querySelectorAll(selector);
+                    for (const popup of popups) {
+                        if (tryKillPopup(popup)) return;
+                    }
+                } catch (e) {}
+            }
+        }
+        
+        scanAndKill();
+        
+        const observer = new MutationObserver((mutations) => {
+            let hasRelevantMutation = false;
+            
+            for (const mutation of mutations) {
+                if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
+                    for (const node of mutation.addedNodes) {
+                        if (node.nodeType === 1) {
+                            const tag = node.tagName?.toLowerCase();
+                            const classes = node.className?.toLowerCase() || '';
+                            const id = node.id?.toLowerCase() || '';
+                            
+                            if (tag === 'dialog' || 
+                                classes.includes('modal') || 
+                                classes.includes('popup') || 
+                                classes.includes('overlay') ||
+                                classes.includes('cookie') ||
+                                id.includes('cookie') ||
+                                id.includes('modal')) {
+                                hasRelevantMutation = true;
+                                if (tryKillPopup(node)) return;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if (hasRelevantMutation) {
+                setTimeout(scanAndKill, 50);
+            }
+        });
+        
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: false,
+            characterData: false
+        });
+        
+        setInterval(scanAndKill, 2000);
+        
+        console.log('🛡️ Popup killer installed and monitoring...');
+        
+        window.__popupKillCount = () => killCount;
+    })();
+    """
+    
+    try:
+        await page.evaluate(popup_killer_script)
+        logger.info("🛡️ Proactive popup killer installed")
+    except Exception as e:
+        print(f"⚠️ Failed to install popup killer: {e}")
+
+
+
 # --- API Models ---
 class SearchRequest(BaseModel):
     url: str
@@ -938,7 +1090,10 @@ async def navigate_to_page(state: AgentState) -> AgentState:
         push_status(state['job_id'], "navigation_failed", {"url": state['query'], "error": str(e)})
         print(f"Navigation failed: {e}")
         # Still continue with the process even if navigation partially fails
-    
+    try:
+            await install_popup_killer(state['page'])
+    except Exception as e:
+        print(f"⚠️ Popup killer installation failed (non-critical): {e}")
     # Only clear input fields once during initial navigation (step 1)
     # Don't clear if we're waiting for or have received user input
     should_clear_inputs = (
@@ -1213,11 +1368,20 @@ async def agent_reasoning_node(state: AgentState) -> AgentState:
             # The LLM ignored our warnings - generate an alternative action
             print(f"🚨 PRE-EXECUTION BLOCK: LLM proposed banned action {proposed_signature}")
             
-            # Generate a corrective action based on the intent
+            # Generate a corrective action based on the intent and context
             if "search" in proposed_signature.lower() or "input[placeholder" in proposed_signature:
-                # Agent wants to search - suggest navigation instead
-                corrective_action = {"type": "extract_correct_selector_using_text", "text": "Mobiles"}
-                state['history'].append(f"Step {state['step']}: 🔧 AUTO-CORRECTED banned search action to navigation approach")
+                # Extract meaningful keywords from user's actual query
+                refined_query = state.get('refined_query', '')
+                fallback_text = "button"  # Safe universal fallback
+                
+                if refined_query:
+                    # Use first meaningful word from the user's actual query
+                    query_words = [word for word in refined_query.split() if len(word) > 3]
+                    if query_words:
+                        fallback_text = query_words[0]
+                
+                corrective_action = {"type": "extract_correct_selector_using_text", "text": fallback_text}
+                state['history'].append(f"Step {state['step']}: 🔧 AUTO-CORRECTED banned search action to extract approach using '{fallback_text}' from user query")
             elif "extract_correct_selector_using_text" in proposed_signature:
                 # Agent wants to extract - suggest scroll instead
                 corrective_action = {"type": "scroll", "direction": "down"}
@@ -1569,7 +1733,105 @@ async def execute_action_node(state: AgentState) -> AgentState:
                     search_flow['submitted'] = True
                     state['search_flow_state'] = search_flow
         elif action_type == "scroll":
-            await page.evaluate("window.scrollBy(0, window.innerHeight)")
+            # Enhanced scroll implementation with multiple strategies
+            direction = action.get("direction", "down")
+            distance = action.get("distance", None)
+            
+            try:
+                # Strategy 1: Try modern smooth scrolling with different distances
+                if direction == "down":
+                    if distance:
+                        scroll_script = f"window.scrollBy({{top: {distance}, behavior: 'smooth'}})"
+                    else:
+                        # Try multiple scroll distances to handle different page layouts
+                        scroll_script = """
+                        const scrollDistance = Math.max(window.innerHeight * 0.8, 400);
+                        window.scrollBy({top: scrollDistance, behavior: 'smooth'});
+                        """
+                elif direction == "up":
+                    if distance:
+                        scroll_script = f"window.scrollBy({{top: -{distance}, behavior: 'smooth'}})"
+                    else:
+                        scroll_script = """
+                        const scrollDistance = Math.max(window.innerHeight * 0.8, 400);
+                        window.scrollBy({top: -scrollDistance, behavior: 'smooth'});
+                        """
+                else:
+                    # Default to down
+                    scroll_script = """
+                    const scrollDistance = Math.max(window.innerHeight * 0.8, 400);
+                    window.scrollBy({top: scrollDistance, behavior: 'smooth'});
+                    """
+                
+                # Get current scroll position before scrolling
+                before_scroll = await page.evaluate("window.pageYOffset")
+                
+                # Execute the scroll
+                await page.evaluate(scroll_script)
+                
+                # Wait for scroll to complete
+                await page.wait_for_timeout(1000)
+                
+                # Verify scroll happened
+                after_scroll = await page.evaluate("window.pageYOffset")
+                
+                if abs(after_scroll - before_scroll) < 50:
+                    # Scroll didn't work well, try alternative methods
+                    print(f"🔄 Primary scroll failed, trying alternative methods...")
+                    
+                    # Strategy 2: Try keyboard scrolling
+                    try:
+                        await page.keyboard.press("Page Down" if direction == "down" else "Page Up")
+                        await page.wait_for_timeout(500)
+                        fallback_scroll = await page.evaluate("window.pageYOffset")
+                        
+                        if abs(fallback_scroll - before_scroll) < 50:
+                            # Strategy 3: Force scroll with different approach
+                            if direction == "down":
+                                force_scroll = """
+                                document.documentElement.scrollTop += Math.max(window.innerHeight, 600);
+                                document.body.scrollTop += Math.max(window.innerHeight, 600);
+                                """
+                            else:
+                                force_scroll = """
+                                document.documentElement.scrollTop -= Math.max(window.innerHeight, 600);
+                                document.body.scrollTop -= Math.max(window.innerHeight, 600);
+                                """
+                            await page.evaluate(force_scroll)
+                            await page.wait_for_timeout(500)
+                            
+                            # Strategy 4: Try scrolling specific scrollable elements
+                            scrollable_elements_script = """
+                            const scrollableElements = Array.from(document.querySelectorAll('*')).filter(el => {
+                                const style = window.getComputedStyle(el);
+                                return style.overflowY === 'scroll' || style.overflowY === 'auto' || 
+                                       (el.scrollHeight > el.clientHeight && style.overflowY !== 'hidden');
+                            });
+                            
+                            for (const el of scrollableElements) {
+                                if (el.scrollHeight > el.clientHeight) {
+                                    el.scrollTop += """ + ("400" if direction == "down" else "-400") + """;
+                                    break;
+                                }
+                            }
+                            """
+                            await page.evaluate(scrollable_elements_script)
+                            await page.wait_for_timeout(500)
+                        
+                    except Exception as e:
+                        print(f"Keyboard scroll fallback failed: {e}")
+                
+                # Final verification
+                final_scroll = await page.evaluate("window.pageYOffset")
+                scroll_distance = abs(final_scroll - before_scroll)
+                
+                state['history'].append(f"Step {state['step']}: ✅ Scroll {direction} completed - moved {scroll_distance}px (from {before_scroll} to {final_scroll})")
+                print(f"📜 SCROLL DEBUG: {direction} - Before: {before_scroll}, After: {final_scroll}, Distance: {scroll_distance}")
+                
+            except Exception as scroll_error:
+                print(f"❌ All scroll strategies failed: {scroll_error}")
+                state['history'].append(f"Step {state['step']}: ❌ Scroll {direction} failed - {str(scroll_error)}")
+                raise scroll_error
         elif action_type == "extract":
             items = action.get("items", [])
             for item in items:
@@ -1579,17 +1841,248 @@ async def execute_action_node(state: AgentState) -> AgentState:
             push_status(job_id, "partial_result", {"new_items_found": len(items), "total_items": len(state['results'])})
         elif action_type == "dismiss_popup_using_text":
             search_text = action.get("text", "")
-            if not search_text: raise ValueError("No text provided for dismiss_popup_using_text action")
-            elements = await find_elements_with_text_live(page, search_text)
-            target_element = next((el for el in elements if el.get('is_visible') and el.get('is_clickable')), None)
+            if not search_text: 
+                raise ValueError("No text provided for dismiss_popup_using_text action")
             
-            if target_element and target_element.get('suggested_selectors'):
-                selector_to_try = target_element['suggested_selectors'][0]
-                await page.locator(selector_to_try).click(timeout=5000)
-                state['history'].append(f"Step {state['step']}: ✅ Dismissed pop-up by clicking element with text '{search_text}' using selector '{selector_to_try}'")
-            else:
-                raise ValueError(f"Could not find a clickable element with text '{search_text}' to dismiss pop-up.")
-        
+            print(f"🛡️ ENHANCED POPUP DISMISSAL for text: '{search_text}'")
+            
+            # Strategy 1: Use the existing popup killer for common patterns
+            common_dismiss_texts = [
+                "accept", "accept all", "accept cookies", "agree", "ok", "okay", "yes", 
+                "close", "dismiss", "no thanks", "not now", "×", "✕", "got it"
+            ]
+            
+            if any(dismiss_text in search_text.lower() for dismiss_text in common_dismiss_texts):
+                print("🎯 Using proactive popup killer for common dismiss text")
+                try:
+                    # Trigger the popup killer specifically for this text
+                    popup_killer_trigger = f"""
+                    (function() {{
+                        const searchText = "{search_text.lower()}";
+                        const buttons = document.querySelectorAll('button, a, [role="button"], [onclick], .close, .dismiss');
+                        
+                        for (const btn of buttons) {{
+                            const text = (btn.textContent || btn.innerText || '').toLowerCase().trim();
+                            const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+                            
+                            if (text.includes(searchText) || ariaLabel.includes(searchText)) {{
+                                try {{
+                                    btn.click();
+                                    console.log('🎯 Popup killer clicked:', btn);
+                                    return true;
+                                }} catch (e) {{
+                                    continue;
+                                }}
+                            }}
+                        }}
+                        return false;
+                    }})();
+                    """
+                    
+                    killed = await page.evaluate(popup_killer_trigger)
+                    if killed:
+                        state['history'].append(f"Step {state['step']}: ✅ Popup dismissed using popup killer for text '{search_text}'")
+                        await page.wait_for_timeout(1000)  # Wait for popup to disappear
+                        return state
+                        
+                except Exception as e:
+                    print(f"Popup killer approach failed: {e}")
+            
+            # Strategy 2: Enhanced element search with popup-specific selectors
+            try:
+                # First, look for elements using our enhanced search
+                elements = await find_elements_with_text_live(page, search_text)
+                
+                # Filter for popup-like elements and clickable dismiss buttons
+                popup_elements = []
+                for element in elements:
+                    # Prioritize elements that are likely dismiss buttons
+                    is_dismiss_button = (
+                        element.get('is_clickable', False) and
+                        element.get('is_visible', False) and
+                        (element.get('tag_name') in ['button', 'a'] or
+                         any(selector for selector in element.get('suggested_selectors', []) 
+                             if 'close' in selector or 'dismiss' in selector or 'modal' in selector))
+                    )
+                    
+                    if is_dismiss_button:
+                        popup_elements.append(element)
+                
+                # Sort by priority (visible + interactive first)
+                popup_elements.sort(key=lambda x: (
+                    x.get('is_visible', False),
+                    x.get('is_interactive', False),
+                    x.get('is_clickable', False)
+                ), reverse=True)
+                
+                if popup_elements:
+                    target_element = popup_elements[0]
+                    selectors = target_element.get('suggested_selectors', [])
+                    
+                    # Try each selector until one works
+                    for selector in selectors:
+                        try:
+                            locator = page.locator(selector)
+                            if await locator.count() > 0 and await locator.first.is_visible():
+                                await locator.first.click(timeout=5000)
+                                state['history'].append(f"Step {state['step']}: ✅ Popup dismissed by clicking element with text '{search_text}' using selector '{selector}'")
+                                await page.wait_for_timeout(1000)
+                                return state
+                        except Exception as e:
+                            print(f"Selector {selector} failed: {e}")
+                            continue
+                
+            except Exception as e:
+                print(f"Enhanced element search failed: {e}")
+            
+            # Strategy 3: Fallback popup detection and removal
+            try:
+                print("🔄 Trying fallback popup detection...")
+                
+                fallback_popup_script = f"""
+                (function() {{
+                    const searchText = "{search_text}".toLowerCase();
+                    let clickedElement = null;
+                    
+                    // Enhanced popup selectors
+                    const popupSelectors = [
+                        '[role="dialog"]', '[role="alertdialog"]', '.modal', '.popup', 
+                        '.overlay', '.lightbox', '.dialog', '#cookie-banner', '.cookie-banner',
+                        '[class*="cookie"]', '#cookieConsent', '.cookie-consent', '[id*="cookie"]',
+                        '.overlay-wrapper', '.modal-backdrop', '.popup-overlay', '[class*="overlay"]',
+                        '[class*="backdrop"]', '.newsletter-popup', '.subscription-modal',
+                        '[class*="newsletter"]', '[aria-modal="true"]', '[data-modal]'
+                    ];
+                    
+                    // Look for popup containers first
+                    for (const selector of popupSelectors) {{
+                        const popups = document.querySelectorAll(selector);
+                        for (const popup of popups) {{
+                            if (popup.offsetParent !== null) {{ // visible
+                                // Look for dismiss elements within this popup
+                                const dismissElements = popup.querySelectorAll(
+                                    'button, a, [role="button"], [onclick], .close, .dismiss, ' +
+                                    '[aria-label*="close"], [aria-label*="dismiss"], ' +
+                                    '[class*="close"], [class*="dismiss"], [data-dismiss]'
+                                );
+                                
+                                for (const element of dismissElements) {{
+                                    const text = (element.textContent || element.innerText || '').toLowerCase().trim();
+                                    const ariaLabel = (element.getAttribute('aria-label') || '').toLowerCase();
+                                    const className = (element.className || '').toLowerCase();
+                                    
+                                    if (text.includes(searchText) || ariaLabel.includes(searchText) || 
+                                        className.includes(searchText.replace(' ', ''))) {{
+                                        try {{
+                                            element.click();
+                                            clickedElement = element;
+                                            console.log('🎯 Fallback popup dismiss clicked:', element);
+                                            return element.tagName + '.' + element.className + '#' + element.id;
+                                        }} catch (e) {{
+                                            continue;
+                                        }}
+                                    }}
+                                }}
+                            }}
+                        }}
+                    }}
+                    
+                    // If no popup container found, search entire document
+                    const allElements = document.querySelectorAll('*');
+                    for (const element of allElements) {{
+                        const style = window.getComputedStyle(element);
+                        const text = (element.textContent || element.innerText || '').toLowerCase().trim();
+                        const ariaLabel = (element.getAttribute('aria-label') || '').toLowerCase();
+                        
+                        // Check if element contains our search text and looks like a dismiss button
+                        if ((text.includes(searchText) || ariaLabel.includes(searchText)) &&
+                            (element.tagName === 'BUTTON' || element.tagName === 'A' || 
+                             element.getAttribute('role') === 'button' || element.onclick ||
+                             style.cursor === 'pointer') &&
+                            style.display !== 'none' && style.visibility !== 'hidden' &&
+                            element.offsetParent !== null) {{
+                            
+                            try {{
+                                element.click();
+                                clickedElement = element;
+                                console.log('🎯 Global search dismiss clicked:', element);
+                                return element.tagName + '.' + element.className + '#' + element.id;
+                            }} catch (e) {{
+                                continue;
+                            }}
+                        }}
+                    }}
+                    
+                    return null;
+                }})();
+                """
+                
+                clicked_info = await page.evaluate(fallback_popup_script)
+                
+                if clicked_info:
+                    state['history'].append(f"Step {state['step']}: ✅ Popup dismissed using fallback detection for text '{search_text}' - clicked {clicked_info}")
+                    await page.wait_for_timeout(1000)
+                    return state
+                
+            except Exception as e:
+                print(f"Fallback popup script failed: {e}")
+            
+            # Strategy 4: Force dismiss common popup patterns
+            try:
+                print("🔄 Trying force dismiss of common popup patterns...")
+                
+                force_dismiss_script = """
+                (function() {
+                    let dismissed = false;
+                    
+                    // Common popup dismiss patterns
+                    const dismissPatterns = [
+                        'button[aria-label*="close"]',
+                        'button[aria-label*="dismiss"]', 
+                        '.modal-close',
+                        '.popup-close',
+                        '.overlay-close',
+                        '[data-dismiss="modal"]',
+                        '[data-dismiss="popup"]',
+                        'button.close',
+                        '.close-btn',
+                        '.close-button',
+                        '[role="dialog"] button:last-child',
+                        '[aria-modal="true"] button:first-child'
+                    ];
+                    
+                    for (const pattern of dismissPatterns) {
+                        try {
+                            const elements = document.querySelectorAll(pattern);
+                            for (const el of elements) {
+                                if (el.offsetParent !== null) {
+                                    el.click();
+                                    dismissed = true;
+                                    console.log('🎯 Force dismissed using pattern:', pattern);
+                                    return pattern;
+                                }
+                            }
+                        } catch (e) {
+                            continue;
+                        }
+                    }
+                    
+                    return dismissed;
+                })();
+                """
+                
+                force_result = await page.evaluate(force_dismiss_script)
+                
+                if force_result:
+                    state['history'].append(f"Step {state['step']}: ✅ Popup force dismissed using pattern '{force_result}'")
+                    await page.wait_for_timeout(1000)
+                    return state
+                    
+            except Exception as e:
+                print(f"Force dismiss failed: {e}")
+            
+            # If all strategies failed
+            raise ValueError(f"Could not find or dismiss popup with text '{search_text}' using any strategy")
         
         elif action_type == "extract_correct_selector_using_text":
             search_text = action.get("text", "")
@@ -2070,14 +2563,14 @@ async def run_job(job_id: str, payload: dict, device_id: str = "emulator-5554", 
         "steps": []
     }
 
-    ngrok_base_url = "https://e161a04243f4.ngrok.app"
+    ngrok_base_url = "https://726c88b92d78.ngrok.app"
 
     # Step 1: Get actual debugger URL
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{ngrok_base_url}/json/version") as resp:
             data = await resp.json()
             websocket_path = data["webSocketDebuggerUrl"].split("/devtools/")[1]
-            cdp_endpoint = f"wss://e161a04243f4.ngrok.app/devtools/{websocket_path}"
+            cdp_endpoint = f"wss://726c88b92d78.ngrok.app/devtools/{websocket_path}"
     
     async with async_playwright() as p:
         browser = await p.chromium.connect_over_cdp(cdp_endpoint)
@@ -2151,7 +2644,7 @@ async def start_search(req: SearchRequest):
     # loop.run_in_executor(None, run_job, job_id, req.dict())
     # asyncio.create_task(run_job(job_id, {**req.model_dump(), "device_id": "emulator-5554"}))
     # asyncio.create_task(run_job(job_id, {**req.model_dump(), "device_id": "https://2b93471dc9cf.ngrok-free.app"}))
-    asyncio.create_task(run_job(job_id, {**req.model_dump(), "device_id": "https://e161a04243f4.ngrok.app"}))
+    asyncio.create_task(run_job(job_id, {**req.model_dump(), "device_id": "https://726c88b92d78.ngrok.app"}))
     return {"job_id": job_id, "stream_url": f"/stream/{job_id}", "result_url": f"/result/{job_id}"}
 
 @app.get("/stream/{job_id}")

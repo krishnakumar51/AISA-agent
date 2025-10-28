@@ -6,6 +6,8 @@ flip/
 analysis/
 amazon/
 iherb/
+cap.py
+old.py
 report.csv
 screenshots/
 *.py[codz]
