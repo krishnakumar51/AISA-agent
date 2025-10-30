@@ -20,6 +20,7 @@ docstring_parser==0.17.0
 fastapi==0.118.0
 frozenlist==1.7.0
 git-filter-repo==2.47.0
+google-generativeai==0.8.5
 greenlet==3.2.4
 groq==0.32.0
 h11==0.16.0

@@ -11,6 +11,7 @@ load_dotenv()  # Load environment variables from a .env file if present
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # --- LLM Model Defaults ---
 # Specifies the default models to use for each provider.
@@ -18,6 +19,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o") # Vision-capable
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama3-70b-8192") # No Vision
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929") # Vision-capable
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-exp") # Vision-capable
 
 # --- CAPTCHA Service API Keys ---
 # Fetch CAPTCHA solving service API keys from environment variables.
@@ -41,46 +43,56 @@ if ANTHROPIC_API_KEY:
     from anthropic import Anthropic
     try:
         anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
-        print("✅ Anthropic client initialized.")
+        print("[OK] Anthropic client initialized.")
     except Exception as e:
-        print(f"⚠️ Anthropic client failed to initialize: {e}")
+        print(f"[WARNING] Anthropic client failed to initialize: {e}")
 
 groq_client = None
 if GROQ_API_KEY:
     from groq import Groq
     try:
         groq_client = Groq(api_key=GROQ_API_KEY)
-        print("✅ Groq client initialized.")
+        print("[OK] Groq client initialized.")
     except Exception as e:
-        print(f"⚠️ Groq client failed to initialize: {e}")
+        print(f"[WARNING] Groq client failed to initialize: {e}")
 
 openai_client = None
 if OPENAI_API_KEY:
     from openai import OpenAI
     try:
         openai_client = OpenAI(api_key=OPENAI_API_KEY)
-        print("✅ OpenAI client initialized.")
+        print("[OK] OpenAI client initialized.")
     except Exception as e:
-        print(f"⚠️ OpenAI client failed to initialize: {e}")
+        print(f"[WARNING] OpenAI client failed to initialize: {e}")
+
+gemini_client = None
+if GEMINI_API_KEY:
+    import google.generativeai as genai
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        gemini_client = genai.GenerativeModel(GEMINI_MODEL)
+        print("[OK] Gemini client initialized.")
+    except Exception as e:
+        print(f"[WARNING] Gemini client failed to initialize: {e}")
 
 # --- CAPTCHA Keys Status ---
 # Display the status of CAPTCHA service API keys
 if CAPSOLVER_API_KEY:
-    print("✅ CapSolver API key loaded.")
+    print("[OK] CapSolver API key loaded.")
 else:
-    print("⚠️ CapSolver API key not found in environment.")
+    print("[WARNING] CapSolver API key not found in environment.")
 
 if TWOCAPTCHA_API_KEY:
-    print("✅ 2Captcha API key loaded.")
+    print("[OK] 2Captcha API key loaded.")
 else:
-    print("⚠️ 2Captcha API key not found in environment.")
+    print("[WARNING] 2Captcha API key not found in environment.")
 
 if ANTICAPTCHA_API_KEY:
-    print("✅ AntiCaptcha API key loaded.")
+    print("[OK] AntiCaptcha API key loaded.")
 else:
-    print("⚠️ AntiCaptcha API key not found in environment.")
+    print("[WARNING] AntiCaptcha API key not found in environment.")
 
 if DBC_USERNAME and DBC_PASSWORD:
-    print("✅ DeathByCaptcha credentials loaded.")
+    print("[OK] DeathByCaptcha credentials loaded.")
 else:
-    print("⚠️ DeathByCaptcha credentials not found in environment.")
+    print("[WARNING] DeathByCaptcha credentials not found in environment.")

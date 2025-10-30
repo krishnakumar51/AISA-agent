@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import List, Union, Tuple, Dict
 
 from config import (
-    anthropic_client, groq_client, openai_client,
-    ANTHROPIC_MODEL, GROQ_MODEL, OPENAI_MODEL
+    anthropic_client, groq_client, openai_client, gemini_client,
+    ANTHROPIC_MODEL, GROQ_MODEL, OPENAI_MODEL, GEMINI_MODEL
 )
 
 class LLMProvider(str, Enum):
@@ -15,6 +15,7 @@ class LLMProvider(str, Enum):
     ANTHROPIC = "anthropic"
     GROQ = "groq"
     OPENAI = "openai"
+    GEMINI = "gemini"
 
 # --- PROMPT TEMPLATES ---
 
@@ -70,6 +71,14 @@ You operate in a step-by-step manner. At each step, analyze the current state of
 - **NO BRAIN-GENERATED SELECTORS**: You are ABSOLUTELY FORBIDDEN from creating selectors like `input[placeholder='...']`, `input[type='text']`, `.search-input`, or any selector from your knowledge. Use ONLY the exact selectors returned by extraction.
 - **NO ALTERNATIVE ACTIONS DURING SELECTOR TESTING**: While testing selectors from extraction, you are FORBIDDEN from taking scroll, navigate, or any other actions. You must ONLY test the extracted selectors.
 - **MEMORY VERIFICATION**: Always verify your actions against the screenshot and update your understanding accordingly
+
+**E-COMMERCE FILTERING & SORTING RULES:**
+- **DO NOT apply filters or sorting UNLESS explicitly requested by the user** in their objective
+- **DEFAULT BEHAVIOR**: Extract products as they appear on the page without any modifications
+- **ONLY apply filters if user asks for**: "cheapest", "lowest price", "most expensive", "highest price", "price range", "brand X", etc.
+- **ONLY apply sorting if user asks for**: "sort by price", "sort by rating", "sort by popularity", etc.
+- **EXAMPLES OF WHEN NOT TO FILTER**: "Find me 5 smartphones", "Get laptops under 50000", "Show me headphones" → DO NOT apply any filters/sorting
+- **EXAMPLES OF WHEN TO FILTER**: "Find the cheapest smartphone", "Show me phones sorted by price", "Get laptops from brand X" → Apply requested filter/sort
 
 **Your Task:**
 1.  **PRIORITY #1: CAPTCHA CHECK:** Before anything else, examine the screenshot for CAPTCHA challenges (reCAPTCHA boxes, Cloudflare Turnstile, hCAPTCHA puzzles, "I'm not a robot" checkboxes, or verification challenges). If you detect any CAPTCHA, immediately use `solve_captcha` to handle it automatically.
@@ -495,6 +504,36 @@ def get_llm_response(
         # Handle potential None response content
         content = response.choices[0].message.content
         return content or "", usage
+
+    elif provider == LLMProvider.GEMINI:
+        if not gemini_client: raise ValueError("Gemini client not initialized.")
+        
+        # Construct the content parts with text and images
+        content_parts = [prompt]
+        
+        # Add images if provided
+        if images:
+            import PIL.Image
+            for img_path in images:
+                if img_path and img_path.exists() and img_path.stat().st_size > 0:
+                    try:
+                        img = PIL.Image.open(img_path)
+                        content_parts.append(img)
+                    except Exception as e:
+                        print(f"Warning: Failed to read screenshot {img_path}: {e}")
+        
+        # Generate response with Gemini
+        full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+        response = gemini_client.generate_content(content_parts)
+        
+        # Gemini doesn't provide detailed token usage in the same way
+        # Estimate tokens (rough approximation: 1 token ≈ 4 characters)
+        usage = {
+            "input_tokens": len(full_prompt) // 4,
+            "output_tokens": len(response.text) // 4 if response.text else 0
+        }
+        
+        return response.text or "", usage
 
     else:
         raise ValueError(f"Unsupported LLM provider: {provider}")

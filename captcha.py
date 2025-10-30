@@ -3,8 +3,10 @@ import json
 import asyncio
 import aiohttp
 import logging
+import base64
+import requests
 from typing import Dict, Any, Optional, List, Tuple
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urljoin
 from config import (
     CAPSOLVER_API_KEY, 
     TWOCAPTCHA_API_KEY, 
@@ -78,6 +80,16 @@ class UniversalCaptchaSolver:
         
         # Solving timeout config
         self.default_timeout = 180  # 3 minutes max per solve attempt
+        
+        # Image CAPTCHA settings
+        self.image_captcha_timeout = 60
+        self.supported_image_formats = ['png', 'jpg', 'jpeg', 'gif', 'bmp']
+        
+        # Initialize session for HTTP requests
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        })
 
     def _validate_api_keys(self):
         """Validate that CAPTCHA service API keys are properly loaded from environment."""
@@ -153,6 +165,13 @@ class UniversalCaptchaSolver:
             except Exception as load_error:
                 print(f"⚠️ Page load state check failed: {load_error}")
                 # Don't return here, continue with detection but be more careful
+            
+            # LAYER 0: IMAGE CAPTCHA DETECTION (Highest Priority)
+            print("🖼️ Layer 0: Image CAPTCHA detection...")
+            image_captcha = await self._detect_image_captcha(page)
+            if image_captcha['type']:
+                print(f"✅ IMAGE CAPTCHA DETECTED: {image_captcha['type']} - confidence: {image_captcha['confidence']}%")
+                return image_captcha
             
             # LAYER 1: Advanced JavaScript Detection with Enhanced Error Handling
             try:
@@ -824,6 +843,211 @@ class UniversalCaptchaSolver:
         print("ℹ️ No CAPTCHAs detected after all attempts")
         return captcha_info
 
+    async def _detect_image_captcha(self, page) -> Dict[str, Any]:
+        """Detect servlet-based and traditional image CAPTCHAs"""
+        captcha_info = {
+            'type': None,
+            'sitekey': None,
+            'confidence': 0,
+            'element': None,
+            'method': 'none',
+            'action': None,
+            'data': {}
+        }
+        
+        try:
+            print("🔍 Scanning for Image-based CAPTCHAs...")
+            
+            # JavaScript detection for image CAPTCHAs
+            image_detection = await page.evaluate("""
+                (() => {
+                    const results = [];
+                    
+                    // SERVLET-BASED CAPTCHA DETECTION (like IMSS)
+                    const servletImages = document.querySelectorAll('img[src*="captcha"], img[src*="Captcha"], img[src*="CAPTCHA"], img[src*="servlet"]');
+                    for (const img of servletImages) {
+                        if (img.offsetParent !== null) { // visible check
+                            
+                            // Look for associated input field
+                            let inputField = null;
+                            const inputSelectors = [
+                                'input[name="captcha"]', 'input[id="captcha"]',
+                                'input[name="captchaCode"]', 'input[id="captchaCode"]',
+                                'input[name="verification"]', 'input[id="verification"]',
+                                'input[name="code"]', 'input[id="code"]'
+                            ];
+                            
+                            for (const selector of inputSelectors) {
+                                const input = document.querySelector(selector);
+                                if (input && input.offsetParent !== null) {
+                                    inputField = input;
+                                    break;
+                                }
+                            }
+                            
+                            // Fallback: find nearby text input
+                            if (!inputField) {
+                                let parent = img.parentElement;
+                                let level = 0;
+                                while (parent && level < 5) {
+                                    const textInputs = parent.querySelectorAll('input[type="text"]');
+                                    for (const input of textInputs) {
+                                        if (input.offsetParent !== null && input.maxLength >= 4 && input.maxLength <= 20) {
+                                            inputField = input;
+                                            break;
+                                        }
+                                    }
+                                    if (inputField) break;
+                                    parent = parent.parentElement;
+                                    level++;
+                                }
+                            }
+                            
+                            if (inputField) {
+                                // Look for refresh element
+                                let refreshElement = null;
+                                const refreshSelectors = [
+                                    'img[id*="refresh"]', 'img[class*="refresh"]',
+                                    'img[alt*="refresh"]', 'img[alt*="cambiar"]',
+                                    'button[id*="refresh"]', 'a[id*="refresh"]'
+                                ];
+                                
+                                for (const selector of refreshSelectors) {
+                                    const element = document.querySelector(selector);
+                                    if (element && element.offsetParent !== null) {
+                                        refreshElement = {
+                                            id: element.id,
+                                            tagName: element.tagName.toLowerCase(),
+                                            selector: element.id ? '#' + element.id : 
+                                                    element.className ? '.' + element.className.split(' ')[0] :
+                                                    selector
+                                        };
+                                        break;
+                                    }
+                                }
+                                
+                                results.push({
+                                    type: 'image_captcha',
+                                    subtype: 'servlet',
+                                    confidence: 95,
+                                    method: 'servlet_detection',
+                                    image_url: img.src,
+                                    image_element: {
+                                        id: img.id,
+                                        src: img.src,
+                                        alt: img.alt || ''
+                                    },
+                                    input_element: {
+                                        id: inputField.id,
+                                        name: inputField.name,
+                                        selector: inputField.id ? '#' + inputField.id : 
+                                                inputField.name ? '[name="' + inputField.name + '"]' : 
+                                                'input[type="text"]'
+                                    },
+                                    refresh_element: refreshElement
+                                });
+                            }
+                        }
+                    }
+                    
+                    // GENERAL IMAGE CAPTCHA PATTERNS
+                    if (results.length === 0) {
+                        const imagePatterns = [
+                            'img[alt*="captcha"]', 'img[alt*="verification"]', 'img[alt*="code"]',
+                            'img[title*="captcha"]', 'img[title*="verification"]', 'img[title*="code"]',
+                            'img[class*="captcha"]', 'img[class*="verification"]', 'img[class*="code"]',
+                            'img[id*="captcha"]', 'img[id*="verification"]', 'img[id*="code"]'
+                        ];
+                        
+                        for (const pattern of imagePatterns) {
+                            const images = document.querySelectorAll(pattern);
+                            for (const img of images) {
+                                if (img.offsetParent !== null && !results.some(r => r.image_url === img.src)) {
+                                    
+                                    // Find nearby input field
+                                    let inputField = null;
+                                    let currentElement = img.parentElement;
+                                    let level = 0;
+                                    
+                                    while (currentElement && level < 5) {
+                                        const inputs = currentElement.querySelectorAll('input[type="text"], input[type="password"]');
+                                        for (const input of inputs) {
+                                            if (input.offsetParent !== null && 
+                                                (input.name && (input.name.toLowerCase().includes('captcha') || 
+                                                              input.name.toLowerCase().includes('verification') ||
+                                                              input.name.toLowerCase().includes('code'))) ||
+                                                (input.id && (input.id.toLowerCase().includes('captcha') ||
+                                                            input.id.toLowerCase().includes('verification') ||
+                                                            input.id.toLowerCase().includes('code')))) {
+                                                inputField = input;
+                                                break;
+                                            }
+                                        }
+                                        if (inputField) break;
+                                        currentElement = currentElement.parentElement;
+                                        level++;
+                                    }
+                                    
+                                    if (inputField) {
+                                        results.push({
+                                            type: 'image_captcha',
+                                            subtype: 'general',
+                                            confidence: 85,
+                                            method: 'image_pattern_detection',
+                                            image_url: img.src,
+                                            image_element: {
+                                                id: img.id,
+                                                src: img.src,
+                                                alt: img.alt || ''
+                                            },
+                                            input_element: {
+                                                id: inputField.id,
+                                                name: inputField.name,
+                                                selector: inputField.id ? '#' + inputField.id : 
+                                                        inputField.name ? '[name="' + inputField.name + '"]' : 
+                                                        'input[type="text"]'
+                                            },
+                                            refresh_element: null
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    return results.sort((a, b) => b.confidence - a.confidence);
+                })()
+            """)
+            
+            if image_detection and len(image_detection) > 0:
+                best_match = image_detection[0]
+                
+                # Enhance the result with additional data
+                captcha_info = {
+                    'type': 'image_captcha',
+                    'sitekey': best_match.get('image_url', ''),  # Use image URL as sitekey
+                    'confidence': best_match.get('confidence', 85),
+                    'method': best_match.get('method', 'image_detection'),
+                    'element': best_match.get('input_element', {}),
+                    'action': 'solve_image',
+                    'data': {
+                        'subtype': best_match.get('subtype', 'general'),
+                        'image_url': best_match.get('image_url', ''),
+                        'image_element': best_match.get('image_element', {}),
+                        'input_element': best_match.get('input_element', {}),
+                        'refresh_element': best_match.get('refresh_element', None),
+                        'requires_text_input': True,
+                        'case_sensitive': True
+                    }
+                }
+                
+                return captcha_info
+            
+        except Exception as e:
+            print(f"⚠️ Image CAPTCHA detection error: {e}")
+        
+        return captcha_info
+
     async def solve_with_fallback(self, captcha_type: str, sitekey: str, page_url: str, 
                                   action: str = "submit", timeout: int = None) -> Tuple[Optional[str], str]:
         """
@@ -870,6 +1094,321 @@ class UniversalCaptchaSolver:
         
         print(f"❌ All solving services failed for {captcha_type}")
         return None, "failed"
+
+    async def solve_image_captcha(self, page, captcha_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Solve image-based CAPTCHA using OCR services"""
+        print(f"🖼️ SOLVING IMAGE CAPTCHA...")
+        
+        result = {
+            'success': False,
+            'solution': None,
+            'service_used': None,
+            'attempt_time': 0,
+            'error': None
+        }
+        
+        try:
+            image_url = captcha_data.get('data', {}).get('image_url', '')
+            input_selector = captcha_data.get('data', {}).get('input_element', {}).get('selector', '')
+            
+            if not image_url or not input_selector:
+                result['error'] = "Missing image URL or input selector"
+                return result
+            
+            print(f"🖼️ Image URL: {image_url}")
+            print(f"🎯 Input selector: {input_selector}")
+            
+            # Get the full image URL if it's relative
+            if image_url.startswith('/'):
+                image_url = urljoin(page.url, image_url)
+            
+            print(f"🌐 Full image URL: {image_url}")
+            
+            # Download the CAPTCHA image
+            image_data = await self._download_captcha_image(page, image_url)
+            if not image_data:
+                result['error'] = "Failed to download CAPTCHA image"
+                return result
+            
+            # Try solving with different services (Tier 1 -> Tier 4)
+            services = [
+                ('CapSolver', self._solve_with_capsolver_image),
+                ('2Captcha', self._solve_with_2captcha_image),
+                ('AntiCaptcha', self._solve_with_anticaptcha_image),
+                ('DeathByCaptcha', self._solve_with_dbc_image)
+            ]
+            
+            for service_name, solve_method in services:
+                try:
+                    print(f"🔄 Trying {service_name} for image CAPTCHA...")
+                    
+                    start_time = time.time()
+                    solution = await solve_method(image_data)
+                    solve_time = time.time() - start_time
+                    
+                    if solution and solution.strip():
+                        print(f"✅ {service_name} solved image CAPTCHA: '{solution}' (in {solve_time:.1f}s)")
+                        
+                        # Input the solution
+                        await page.locator(input_selector).fill(solution)
+                        await page.wait_for_timeout(500)  # Brief pause
+                        
+                        result.update({
+                            'success': True,
+                            'solution': solution,
+                            'service_used': service_name,
+                            'attempt_time': solve_time
+                        })
+                        
+                        return result
+                    else:
+                        print(f"❌ {service_name} failed to solve image CAPTCHA")
+                        
+                except Exception as e:
+                    print(f"❌ {service_name} error: {e}")
+                    continue
+            
+            result['error'] = "All image CAPTCHA services failed"
+            
+        except Exception as e:
+            print(f"❌ Image CAPTCHA solving error: {e}")
+            result['error'] = str(e)
+        
+        return result
+    
+    async def _download_captcha_image(self, page, image_url: str) -> Optional[bytes]:
+        """Download CAPTCHA image from URL"""
+        try:
+            print(f"📥 Downloading CAPTCHA image: {image_url}")
+            
+            # Get cookies from the browser page
+            cookies = await page.context.cookies()
+            cookie_dict = {cookie['name']: cookie['value'] for cookie in cookies}
+            
+            # Download the image with the same session
+            response = self.session.get(
+                image_url, 
+                cookies=cookie_dict,
+                timeout=10,
+                headers={
+                    'Referer': page.url,
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+            )
+            
+            if response.status_code == 200:
+                print(f"✅ Downloaded CAPTCHA image: {len(response.content)} bytes")
+                return response.content
+            else:
+                print(f"❌ Failed to download image: HTTP {response.status_code}")
+                return None
+                
+        except Exception as e:
+            print(f"❌ Image download error: {e}")
+            return None
+    
+    async def _solve_with_capsolver_image(self, image_data: bytes) -> Optional[str]:
+        """Solve image CAPTCHA using CapSolver"""
+        if not self.cs_api_key:
+            return None
+            
+        try:
+            image_base64 = base64.b64encode(image_data).decode('utf-8')
+            
+            # Create task
+            task_data = {
+                "clientKey": self.cs_api_key,
+                "task": {
+                    "type": "ImageToTextTask",
+                    "body": image_base64,
+                    "case": True,  # Case sensitive
+                    "minLength": 4,
+                    "maxLength": 8
+                }
+            }
+            
+            response = self.session.post(
+                "https://api.capsolver.com/createTask",
+                json=task_data,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('errorId') == 0:
+                    task_id = result.get('taskId')
+                    
+                    # Get result
+                    for _ in range(30):  # Wait up to 60 seconds
+                        time.sleep(2)
+                        
+                        result_response = self.session.post(
+                            "https://api.capsolver.com/getTaskResult",
+                            json={"clientKey": self.cs_api_key, "taskId": task_id},
+                            timeout=30
+                        )
+                        
+                        if result_response.status_code == 200:
+                            result_data = result_response.json()
+                            if result_data.get('status') == 'ready':
+                                return result_data.get('solution', {}).get('text')
+                            elif result_data.get('status') == 'failed':
+                                break
+                        
+        except Exception as e:
+            print(f"CapSolver image error: {e}")
+        
+        return None
+    
+    async def _solve_with_2captcha_image(self, image_data: bytes) -> Optional[str]:
+        """Solve image CAPTCHA using 2Captcha"""
+        if not self.tc_api_key:
+            return None
+            
+        try:
+            image_base64 = base64.b64encode(image_data).decode('utf-8')
+            
+            # Submit CAPTCHA
+            submit_data = {
+                'key': self.tc_api_key,
+                'method': 'base64',
+                'body': image_base64,
+                'regsense': 1,  # Case sensitive
+                'numeric': 0,   # Text and numbers
+                'min_len': 4,
+                'max_len': 8
+            }
+            
+            response = self.session.post(
+                "https://2captcha.com/in.php",
+                data=submit_data,
+                timeout=30
+            )
+            
+            if response.status_code == 200 and response.text.startswith('OK|'):
+                captcha_id = response.text.split('|')[1]
+                
+                # Get result
+                for _ in range(30):  # Wait up to 60 seconds
+                    time.sleep(2)
+                    
+                    result_response = self.session.get(
+                        f"https://2captcha.com/res.php?key={self.tc_api_key}&action=get&id={captcha_id}",
+                        timeout=30
+                    )
+                    
+                    if result_response.status_code == 200:
+                        if result_response.text.startswith('OK|'):
+                            return result_response.text.split('|')[1]
+                        elif result_response.text == 'CAPCHA_NOT_READY':
+                            continue
+                        else:
+                            break
+                        
+        except Exception as e:
+            print(f"2Captcha image error: {e}")
+        
+        return None
+    
+    async def _solve_with_anticaptcha_image(self, image_data: bytes) -> Optional[str]:
+        """Solve image CAPTCHA using AntiCaptcha"""
+        if not self.ac_api_key:
+            return None
+            
+        try:
+            image_base64 = base64.b64encode(image_data).decode('utf-8')
+            
+            # Create task
+            task_data = {
+                "clientKey": self.ac_api_key,
+                "task": {
+                    "type": "ImageToTextTask",
+                    "body": image_base64,
+                    "case": True,
+                    "minLength": 4,
+                    "maxLength": 8
+                }
+            }
+            
+            response = self.session.post(
+                "https://api.anti-captcha.com/createTask",
+                json=task_data,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('errorId') == 0:
+                    task_id = result.get('taskId')
+                    
+                    # Get result
+                    for _ in range(30):  # Wait up to 60 seconds
+                        time.sleep(2)
+                        
+                        result_response = self.session.post(
+                            "https://api.anti-captcha.com/getTaskResult",
+                            json={"clientKey": self.ac_api_key, "taskId": task_id},
+                            timeout=30
+                        )
+                        
+                        if result_response.status_code == 200:
+                            result_data = result_response.json()
+                            if result_data.get('status') == 'ready':
+                                return result_data.get('solution', {}).get('text')
+                            elif result_data.get('status') == 'processing':
+                                continue
+                            else:
+                                break
+                        
+        except Exception as e:
+            print(f"AntiCaptcha image error: {e}")
+        
+        return None
+    
+    async def _solve_with_dbc_image(self, image_data: bytes) -> Optional[str]:
+        """Solve image CAPTCHA using DeathByCaptcha"""
+        if not self.dbc_user or not self.dbc_pass:
+            return None
+            
+        try:
+            image_base64 = base64.b64encode(image_data).decode('utf-8')
+            
+            # Submit CAPTCHA
+            submit_data = {
+                'username': self.dbc_user,
+                'password': self.dbc_pass,
+                'captchafile': 'base64:' + image_base64
+            }
+            
+            response = self.session.post(
+                "http://api.dbcapi.me/api/captcha",
+                data=submit_data,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('status') == 0:  # Success
+                    captcha_id = result.get('captcha')
+                    
+                    # Get result
+                    for _ in range(30):  # Wait up to 60 seconds
+                        time.sleep(2)
+                        
+                        result_response = self.session.get(
+                            f"http://api.dbcapi.me/api/captcha/{captcha_id}",
+                            timeout=30
+                        )
+                        
+                        if result_response.status_code == 200:
+                            result_data = result_response.json()
+                            if result_data.get('text'):
+                                return result_data.get('text')
+                        
+        except Exception as e:
+            print(f"DeathByCaptcha image error: {e}")
+        
+        return None
 
     async def _solve_capsolver(self, captcha_type: str, sitekey: str, page_url: str, 
                               action: str, timeout: int) -> Optional[str]:
@@ -1490,30 +2029,57 @@ class UniversalCaptchaSolver:
             print(f"📊 Confidence: {captcha_info['confidence']}%")
             print(f"🔍 Detection Method: {captcha_info['method']}")
             
-            # Step 2: Solve with multi-tier fallback
-            token, service_used = await self.solve_with_fallback(
-                captcha_type=captcha_info['type'],
-                sitekey=captcha_info['sitekey'],
-                page_url=page_url,
-                action=captcha_info.get('action', 'submit')
-            )
+            # Step 2: Solve based on CAPTCHA type
+            if captcha_info['type'] == 'image_captcha':
+                # Special handling for image CAPTCHAs
+                solve_result = await self.solve_image_captcha(page, captcha_info)
+                
+                if solve_result['success']:
+                    return {
+                        'found': True,
+                        'solved': True,
+                        'type': captcha_info['type'],
+                        'service': solve_result['service_used'],
+                        'error': None,
+                        'confidence': captcha_info['confidence'],
+                        'method': captcha_info['method'],
+                        'solution': solve_result['solution']
+                    }
+                else:
+                    return {
+                        'found': True,
+                        'solved': False,
+                        'type': captcha_info['type'],
+                        'service': None,
+                        'error': solve_result.get('error', 'Image CAPTCHA solving failed'),
+                        'confidence': captcha_info['confidence']
+                    }
+            else:
+                # Standard CAPTCHA solving with multi-tier fallback
+                token, service_used = await self.solve_with_fallback(
+                    captcha_type=captcha_info['type'],
+                    sitekey=captcha_info['sitekey'],
+                    page_url=page_url,
+                    action=captcha_info.get('action', 'submit')
+                )
             
-            if not token:
-                return {
-                    'found': True,
-                    'solved': False,
-                    'type': captcha_info['type'],
-                    'service': service_used,
-                    'error': 'All solving services failed',
-                    'confidence': captcha_info['confidence']
-                }
-            
-            print(f"🎉 CAPTCHA SOLVED by {service_used}")
-            
-            # Step 3: Inject solution with verification
-            injection_success = await self.inject_captcha_solution_universal(
-                page, token, captcha_info['type']
-            )
+                # Only process standard CAPTCHAs beyond this point
+                if not token:
+                    return {
+                        'found': True,
+                        'solved': False,
+                        'type': captcha_info['type'],
+                        'service': service_used,
+                        'error': 'All solving services failed',
+                        'confidence': captcha_info['confidence']
+                    }
+                
+                print(f"🎉 CAPTCHA SOLVED by {service_used}")
+                
+                # Step 3: Inject solution with verification (for standard CAPTCHAs only)
+                injection_success = await self.inject_captcha_solution_universal(
+                    page, token, captcha_info['type']
+                )
             
             if injection_success:
                 print("✅ CAPTCHA SOLUTION SUCCESSFULLY INJECTED AND VERIFIED")

@@ -22,7 +22,7 @@ from langgraph.graph import StateGraph, END
 from bs4 import BeautifulSoup
 
 from llm import LLMProvider, get_refined_prompt, get_agent_action
-from config import SCREENSHOTS_DIR, ANTHROPIC_MODEL, GROQ_MODEL, OPENAI_MODEL
+from config import SCREENSHOTS_DIR, ANTHROPIC_MODEL, GROQ_MODEL, OPENAI_MODEL, GEMINI_MODEL
 # CAPTCHA Integration - Universal CAPTCHA solver for all types
 from captcha import UniversalCaptchaSolver
 
@@ -93,14 +93,18 @@ TOKEN_COSTS = {
         "gpt-4o": {"input": 5.0, "output": 15.0}
     },
     "groq": {
-        "llama3-8b-8192": {"input": 0.05, "output": 0.10}
+        "llama3-8b-8192": {"input": 0.05, "output": 0.10}    #not capable of vision
+    },
+    "gemini": {
+        "gemini-2.0-flash-exp": {"input": 4.0, "output": 12.0}
     }
 }
 
 MODEL_MAPPING = {
     LLMProvider.ANTHROPIC: ANTHROPIC_MODEL,
     LLMProvider.GROQ: GROQ_MODEL,
-    LLMProvider.OPENAI: OPENAI_MODEL
+    LLMProvider.OPENAI: OPENAI_MODEL,
+    LLMProvider.GEMINI: GEMINI_MODEL
 }
 
 # --- Helper Functions ---
@@ -808,233 +812,6 @@ class AgentState(TypedDict):
     captcha_attempts: List[Dict[str, Any]]  # History of CAPTCHA solving attempts
     captcha_service_used: str         # Which service successfully solved the CAPTCHA
 
-# --- NEW: Enhanced memory context builder ---
-
-
-
-
-
-# def build_enhanced_memory_context(state: AgentState) -> str:
-#     """
-#     🧠 Build comprehensive memory context with enhanced UX and prioritization.
-#     Combines comprehensive functionality with superior visual hierarchy and readability.
-#     """
-#     history_lines = []
-    
-#     # ═══════════════════════════════════════════════════════════════
-#     # 🎯 PRIORITY #1: ELEMENT SEARCH RESULTS (If Available)
-#     # ═══════════════════════════════════════════════════════════════
-#     found_context = state.get('found_element_context', {})
-#     if found_context:
-#         history_lines.append("=" * 70)
-#         history_lines.append("🎯 ELEMENT SEARCH RESULTS FROM PREVIOUS STEP")
-#         history_lines.append("=" * 70)
-#         history_lines.append(f"Search Text: '{found_context['text']}'")
-#         history_lines.append(f"Total Matches: {found_context.get('total_matches', 0)}")
-        
-#         # Testing Protocol Status
-#         if found_context.get('testing_required', False):
-#             untested_selectors = found_context.get('untested_selectors', [])
-#             current_index = found_context.get('current_test_index', 0)
-            
-#             if current_index < len(untested_selectors):
-#                 next_selector = untested_selectors[current_index]
-#                 history_lines.append("")
-#                 history_lines.append("🚨 MANDATORY TESTING IN PROGRESS 🚨")
-#                 history_lines.append(f"Progress: Selector #{current_index + 1} of {len(untested_selectors)}")
-#                 history_lines.append(f"NEXT REQUIRED: {{\"type\": \"click\", \"selector\": \"{next_selector}\"}}")
-        
-#         # Show top matches with enhanced formatting
-#         if found_context.get('all_elements'):
-#             all_elements = found_context['all_elements']
-#             visible = [e for e in all_elements if e.get('is_visible')]
-#             interactive = [e for e in all_elements if e.get('is_interactive')]
-            
-#             history_lines.append(f"\nFound: {len(visible)} visible, {len(interactive)} interactive elements")
-#             history_lines.append("\n📋 TOP MATCHES (Use these selectors):")
-            
-#             for i, elem in enumerate(all_elements[:3], 1):
-#                 vis = "✅ VISIBLE" if elem.get('is_visible') else "❌ HIDDEN"
-#                 inter = "🖱️ INTERACTIVE" if elem.get('is_interactive') else "📄 STATIC"
-                
-#                 history_lines.append(f"\n  [{i}] {elem['tag_name']} - {vis}, {inter}")
-                
-#                 if elem['suggested_selectors']:
-#                     best_selector = elem['suggested_selectors'][0]
-#                     history_lines.append(f"      ✅ Ready-to-use: {best_selector}")
-#                     if len(elem['suggested_selectors']) > 1:
-#                         history_lines.append(f"      Alternatives: {', '.join(elem['suggested_selectors'][1:3])}")
-        
-#         history_lines.append("=" * 70)
-#         history_lines.append("")
-    
-#     # ═══════════════════════════════════════════════════════════════
-#     # 🔐 PRIORITY #2: USER INPUT CONTEXT
-#     # ═══════════════════════════════════════════════════════════════
-#     if state.get('user_input_response'):
-#         input_type = state.get('user_input_request', {}).get('input_type', 'input')
-#         is_sensitive = state.get('user_input_request', {}).get('is_sensitive', False)
-        
-#         if is_sensitive:
-#             history_lines.append("🔐 USER PROVIDED SENSITIVE DATA:")
-#             history_lines.append(f"   Type: {input_type.upper()}")
-#             history_lines.append(f"   Value: {state['user_input_response']}")
-#             history_lines.append(f"   ⚠️ USE THIS EXACT VALUE - DO NOT GENERATE FAKE DATA")
-#         else:
-#             history_lines.append(f"👤 USER PROVIDED {input_type.upper()}: {state['user_input_response']}")
-        
-#         history_lines.append("")
-    
-#     # ═══════════════════════════════════════════════════════════════
-#     # 🤖 PRIORITY #3: CAPTCHA STATUS
-#     # ═══════════════════════════════════════════════════════════════
-#     captcha_detected = state.get('captcha_detected', {})
-#     if captcha_detected.get('type'):
-#         captcha_solved = state.get('captcha_solved', False)
-#         history_lines.append("🤖 CAPTCHA STATUS:")
-#         history_lines.append(f"   Type: {captcha_detected['type'].upper()}")
-#         history_lines.append(f"   Status: {'✅ SOLVED' if captcha_solved else '⏳ REQUIRES SOLVING'}")
-        
-#         if not captcha_solved:
-#             history_lines.append("   💡 REQUIRED ACTION: Use 'solve_captcha' to handle this challenge")
-        
-#         history_lines.append("")
-    
-#     # ═══════════════════════════════════════════════════════════════
-#     # 📊 ACTION VERIFICATION RESULTS (Recent 5)
-#     # ═══════════════════════════════════════════════════════════════
-#     action_verification = state.get('action_verification', [])
-#     if action_verification:
-#         recent_verifications = action_verification[-5:]
-#         history_lines.append("📊 RECENT ACTION VERIFICATION:")
-#         for verification in recent_verifications:
-#             step = verification.get('step', 'N/A')
-#             success = "✅" if verification.get('success') or verification.get('changes_detected') else "❌"
-#             action_type = verification.get('action', {}).get('type', 'unknown')
-#             notes = "; ".join(verification.get('verification_notes', []))
-#             # Truncate long notes for better readability
-#             if len(notes) > 60:
-#                 notes = notes[:57] + "..."
-#             history_lines.append(f"   {success} Step {step} ({action_type}): {notes}")
-#         history_lines.append("")
-    
-#     # ═══════════════════════════════════════════════════════════════
-#     # ✅ SUCCESSFUL SELECTORS MEMORY
-#     # ═══════════════════════════════════════════════════════════════
-#     successful_selectors = state.get('successful_selectors', {})
-#     if successful_selectors:
-#         history_lines.append("✅ VERIFIED WORKING SELECTORS:")
-#         for text, selector in list(successful_selectors.items())[-3:]:  # Last 3 for brevity
-#             history_lines.append(f"   '{text}' → {selector}")
-#         history_lines.append("💡 TIP: Reuse these selectors for same elements")
-#         history_lines.append("")
-    
-#     # ═══════════════════════════════════════════════════════════════
-#     # 🔍 SEARCH FLOW PROGRESS
-#     # ═══════════════════════════════════════════════════════════════
-#     search_flow = state.get('search_flow_state', {})
-#     if search_flow:
-#         history_lines.append("🔍 SEARCH FLOW PROGRESS:")
-#         for phase, status in search_flow.items():
-#             status_icon = "✅" if status else "⏳"
-#             history_lines.append(f"   {status_icon} {phase.capitalize()}: {'Complete' if status else 'Pending'}")
-        
-#         # Add next step guidance
-#         if not search_flow.get('detected', False):
-#             history_lines.append("   💡 NEXT: Detect search input using extract_correct_selector_using_text")
-#         elif not search_flow.get('clicked', False):
-#             history_lines.append("   💡 NEXT: Click on the search input field to focus it")
-#         elif not search_flow.get('filled', False):
-#             history_lines.append("   💡 NEXT: Fill the search input with user's query")
-#         elif not search_flow.get('submitted', False):
-#             history_lines.append("   💡 NEXT: Press Enter to submit the search")
-        
-#         history_lines.append("")
-    
-#     # ═══════════════════════════════════════════════════════════════
-#     # 🎯 RECENT ELEMENT INTERACTIONS
-#     # ═══════════════════════════════════════════════════════════════
-#     element_log = state.get('element_interaction_log', [])
-#     if element_log:
-#         recent_interactions = element_log[-3:]  # Last 3 interactions
-#         history_lines.append("🎯 RECENT ELEMENT INTERACTIONS:")
-#         for interaction in recent_interactions:
-#             step = interaction.get('step', 'N/A')
-#             text = interaction.get('search_text', 'N/A')
-#             tested = interaction.get('tested_selectors', 0)
-#             working = interaction.get('working_selectors', 0)
-#             history_lines.append(f"   • Step {step}: '{text}' → {working}/{tested} selectors working")
-#         history_lines.append("")
-    
-#     # ═══════════════════════════════════════════════════════════════
-#     # 📋 SELECTOR ATTEMPT TRACKING
-#     # ═══════════════════════════════════════════════════════════════
-#     selector_attempts = state.get('selector_attempts', {})
-#     if selector_attempts:
-#         history_lines.append("📋 SELECTOR ATTEMPT TRACKING:")
-#         for text, selectors in list(selector_attempts.items())[-3:]:  # Last 3 texts
-#             history_lines.append(f"   • '{text}': {len(selectors)} selectors tested")
-#         history_lines.append("💡 TIP: Use different text if current selectors aren't working")
-#         history_lines.append("")
-    
-#     # ═══════════════════════════════════════════════════════════════
-#     # ⚠️ FAILURE ANALYSIS - DO NOT REPEAT
-#     # ═══════════════════════════════════════════════════════════════
-#     failed_actions = state.get('failed_actions', {})
-#     if failed_actions:
-#         total_failures = sum(failed_actions.values())
-#         history_lines.append(f"⚠️ FAILED ACTIONS - DO NOT REPEAT ({total_failures} total):")
-        
-#         # Show top failures in organized format
-#         failed_list = sorted(failed_actions.items(), key=lambda x: -x[1])
-#         for sig, count in failed_list[:5]:  # Top 5 failures
-#             history_lines.append(f"   ❌ {sig} (failed {count}x)")
-        
-#         # Failure pattern analysis
-#         click_failures = [k for k in failed_actions.keys() if k.startswith('click|')]
-#         fill_failures = [k for k in failed_actions.keys() if k.startswith('fill|')]
-#         extract_failures = [k for k in failed_actions.keys() if 'extract_correct_selector' in k]
-        
-#         if click_failures or fill_failures or extract_failures:
-#             history_lines.append(f"   Breakdown: {len(click_failures)} click, {len(fill_failures)} fill, {len(extract_failures)} extract failures")
-        
-#         if total_failures > 10:
-#             history_lines.append("   💡 HIGH FAILURE RATE: Consider different approach (scroll, navigation)")
-        
-#         history_lines.append("")
-    
-#     # ═══════════════════════════════════════════════════════════════
-#     # 🔄 CAPTCHA ATTEMPT HISTORY (If Available)
-#     # ═══════════════════════════════════════════════════════════════
-#     captcha_attempts = state.get('captcha_attempts', [])
-#     if captcha_attempts:
-#         history_lines.append(f"🔄 CAPTCHA ATTEMPT HISTORY ({len(captcha_attempts)} attempts):")
-#         for i, attempt in enumerate(captcha_attempts[-3:], 1):  # Last 3 attempts
-#             status = "✅" if attempt.get('solved', False) else "❌"
-#             service = attempt.get('service', 'Unknown')
-#             captcha_type = attempt.get('type', 'Unknown')
-#             history_lines.append(f"   {status} Attempt {i}: {service} - {captcha_type}")
-#         history_lines.append("")
-    
-#     # ═══════════════════════════════════════════════════════════════
-#     # 📜 RECENT ACTION HISTORY (Last 8 only for readability)
-#     # ═══════════════════════════════════════════════════════════════
-#     if state.get('history'):
-#         history_lines.append("📜 RECENT ACTIONS:")
-#         recent = state['history'][-8:]  # Reduced from showing all to last 8 for better focus
-#         for line in recent:
-#             history_lines.append(f"   {line}")
-#         history_lines.append("")
-    
-#     return "\n".join(history_lines)
-
-
-
-
-
-
-
-
 
 def build_enhanced_memory_context(state: AgentState) -> str:
     """
@@ -1356,72 +1133,6 @@ async def navigate_to_page(state: AgentState) -> AgentState:
         push_status(state['job_id'], "navigation_failed", {"url": state['query'], "error": str(e)})
         print(f"Navigation failed: {e}")
         # Still continue with the process even if navigation partially fails
-    try:
-            await install_popup_killer(state['page'])
-    except Exception as e:
-        print(f"⚠️ Popup killer installation failed (non-critical): {e}")
-    
-    # 🤖 AUTOMATIC CAPTCHA DETECTION ON PAGE LOAD
-    # Proactively scan for CAPTCHAs immediately after navigation
-    # This helps the agent identify CAPTCHA challenges early in the process
-    try:
-        print(f"🔍 PROACTIVE CAPTCHA SCAN: Checking for CAPTCHA challenges on page load...")
-        captcha_detection = await captcha_solver.detect_captcha_universal(state['page'])
-        
-        if captcha_detection['type']:
-            # CAPTCHA detected - log for agent awareness
-            detection_msg = f"🚨 CAPTCHA DETECTED ON PAGE LOAD: {captcha_detection['type'].upper()} found (confidence: {captcha_detection['confidence']}%)"
-            state['history'].append(f"Navigation: {detection_msg}")
-            print(detection_msg)
-            
-            # Store detection info for agent to use
-            state['captcha_detected'] = captcha_detection
-            push_status(state['job_id'], "captcha_detected", {
-                "type": captcha_detection['type'],
-                "confidence": captcha_detection['confidence'],
-                "sitekey": captcha_detection.get('sitekey', 'unknown')
-            })
-        else:
-            print(f"✅ CAPTCHA SCAN CLEAR: No CAPTCHA challenges detected on initial page load")
-            
-    except Exception as e:
-        print(f"⚠️ CAPTCHA detection during navigation failed (non-critical): {e}")
-    
-    # Only clear input fields once during initial navigation (step 1)
-    # Don't clear if we're waiting for or have received user input
-    should_clear_inputs = (
-        state['step'] == 1 and 
-        not state.get('waiting_for_user_input', False) and 
-        not state.get('user_input_response') and
-        not state.get('user_input_flow_active', False) and
-        state['job_id'] not in JOBS_IN_INPUT_FLOW  # Global protection
-    )
-    
-    # DEBUG: Add comprehensive logging for input clearing decision
-    print(f"🧹 INPUT CLEARING DEBUG - Job {state['job_id']}")
-    print(f"   step: {state['step']}")
-    print(f"   waiting_for_user_input: {state.get('waiting_for_user_input', False)}")
-    print(f"   user_input_response: '{state.get('user_input_response', 'None')}'")
-    print(f"   user_input_flow_active: {state.get('user_input_flow_active', False)}")
-    print(f"   job_id in JOBS_IN_INPUT_FLOW: {state['job_id'] in JOBS_IN_INPUT_FLOW}")
-    print(f"   should_clear_inputs: {should_clear_inputs}")
-    
-    if should_clear_inputs:
-        try:
-            inputs = await state['page'].query_selector_all('input')
-            clear_count = 0
-            for inp in inputs:
-                try:
-                    if await inp.is_enabled() and await inp.is_visible():
-                        await inp.fill("")
-                        clear_count += 1
-                except Exception as e:
-                    print(f"Failed to clear input field: {e}")
-            print(f"   ✅ Cleared {clear_count} input fields during initial navigation")
-        except Exception as e:
-            print(f"   ❌ Failed to clear input fields: {e}")
-    else:
-        print(f"   ⏭️ Skipping input clearing (protection active)")
 
     return state
 
@@ -3197,14 +2908,14 @@ async def run_job(job_id: str, payload: dict, device_id: str = "emulator-5554", 
         "steps": []
     }
 
-    ngrok_base_url = "https://618f8235f965.ngrok.app"
+    ngrok_base_url = "https://agent-umi.ngrok.app"
 
     # Step 1: Get actual debugger URL
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{ngrok_base_url}/json/version") as resp:
             data = await resp.json()
             websocket_path = data["webSocketDebuggerUrl"].split("/devtools/")[1]
-            cdp_endpoint = f"wss://618f8235f965.ngrok.app/devtools/{websocket_path}"
+            cdp_endpoint = f"wss://agent-umi.ngrok.app/devtools/{websocket_path}"
     
     async with async_playwright() as p:
         browser = await p.chromium.connect_over_cdp(cdp_endpoint)
@@ -3278,7 +2989,7 @@ async def start_search(req: SearchRequest):
     # loop.run_in_executor(None, run_job, job_id, req.dict())
     # asyncio.create_task(run_job(job_id, {**req.model_dump(), "device_id": "emulator-5554"}))
     # asyncio.create_task(run_job(job_id, {**req.model_dump(), "device_id": "https://2b93471dc9cf.ngrok-free.app"}))
-    asyncio.create_task(run_job(job_id, {**req.model_dump(), "device_id": "https://618f8235f965.ngrok.app"}))
+    asyncio.create_task(run_job(job_id, {**req.model_dump(), "device_id": "https://agent-umi.ngrok.app"}))
     return {"job_id": job_id, "stream_url": f"/stream/{job_id}", "result_url": f"/result/{job_id}"}
 
 @app.get("/stream/{job_id}")
